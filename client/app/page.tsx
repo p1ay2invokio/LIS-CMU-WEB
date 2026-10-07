@@ -5,15 +5,6 @@ import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation";
 import LightRays from '../components/LightRays';
 import { motion } from "framer-motion";
-import type { Metadata } from 'next'
-
-export const metadata: Metadata = {
-  title: 'LIS CMU',
-  description: 'ระบบลงทรัพยากรสารสนเทศห้องสมุด',
-  icons:{
-    icon: '/logo.png'
-  }
-}
 
 export default function Home() {
 
