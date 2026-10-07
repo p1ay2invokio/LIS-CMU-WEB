@@ -1,1 +1,1 @@
-export const endpoint = "https://api.liscmu.online:3001"
+export const endpoint = "https://api.liscmu.online"
