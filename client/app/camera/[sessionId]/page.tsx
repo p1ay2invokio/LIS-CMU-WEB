@@ -5,9 +5,29 @@ import { useParams } from "next/navigation"
 import Webcam from "react-webcam"
 import { socket } from "@/app/socket"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { Toaster, toast } from "sonner"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
+import { Toaster } from "@/components/ui/sonner"
+import { Spinner } from "@/components/ui/spinner"
+import {
+    Trace,
+    TraceLine,
+    TraceIcon,
+    TraceTitle,
+    TraceDescription,
+    TraceCollapsible,
+    TraceCollapsibleTrigger,
+    TraceCollapsibleContent,
+} from "@/components/ui/trace"
+import { toast } from "sonner"
 import {
     Camera as CameraIcon,
     Upload,
@@ -26,6 +46,8 @@ import {
     Info,
     ZoomIn,
     X,
+    Loader2,
+    Clock,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { PlayBook } from "@/class/playbook.class"
@@ -65,6 +87,9 @@ const CameraPage = () => {
 
     // Submission State
     const [isSending, setIsSending] = useState<boolean>(false)
+    const [thinkingStep, setThinkingStep] = useState<"uploading" | "received" | "analyzing" | "extracting" | null>(null)
+    const [thinkingMessage, setThinkingMessage] = useState<string>("")
+    const [thinkingModel, setThinkingModel] = useState<string>("")
     const [isSuccess, setIsSuccess] = useState<boolean>(false)
     const [lastSentImage, setLastSentImage] = useState<string | null>(null)
     const [enlargedImage, setEnlargedImage] = useState<string | null>(null)
@@ -73,6 +98,12 @@ const CameraPage = () => {
     // LocalStorage Keys for remembering user preferences
     const TAB_STORAGE_KEY = "camera_preferred_tab"
     const FACING_MODE_STORAGE_KEY = "camera_preferred_facing_mode"
+    const MODEL_STORAGE_KEY = "camera_preferred_ai_model"
+
+    const AI_MODEL_OPTIONS = [
+        { value: "gemini-3.5-flash-lite", label: "gemini-3.5-flash-lite (Default)" },
+    ]
+    const [selectedModel, setSelectedModel] = useState<string>("gemini-3.5-flash-lite")
 
     // Mounting Check for SSR Safety & restore saved user preferences
     useEffect(() => {
@@ -85,11 +116,25 @@ const CameraPage = () => {
             if (savedFacing === "environment" || savedFacing === "user") {
                 setFacingMode(savedFacing)
             }
+            const savedModel = localStorage.getItem(MODEL_STORAGE_KEY)
+            if (savedModel && AI_MODEL_OPTIONS.some((m) => m.value === savedModel)) {
+                setSelectedModel(savedModel)
+            }
         } catch (e) {
             console.error("Failed to restore preferences from localStorage:", e)
         }
         setIsMounted(true)
     }, [])
+
+    const handleModelChange = (val: string | null) => {
+        if (!val) return
+        setSelectedModel(val)
+        try {
+            localStorage.setItem(MODEL_STORAGE_KEY, val)
+        } catch (e) {
+            console.error("Failed to save model preference to localStorage:", e)
+        }
+    }
 
     // Handle tab change and persist to localStorage
     const handleTabChange = (val: string) => {
@@ -121,9 +166,21 @@ const CameraPage = () => {
             setIsConnected(false)
         }
 
+        const onAiThinking = (payload: any) => {
+            const step = payload?.step || "analyzing"
+            const msg = "Thinking..."
+            const modelName = payload?.model || ""
+            setThinkingStep(step)
+            setThinkingMessage(msg)
+            if (modelName) {
+                setThinkingModel(modelName)
+            }
+        }
+
         socket.on("connect", onConnect)
         socket.on("phone-join-room:success", onJoinSuccess)
         socket.on("disconnect", onDisconnect)
+        socket.on("ai:thinking", onAiThinking)
 
         if (!socket.connected) {
             socket.connect()
@@ -135,6 +192,7 @@ const CameraPage = () => {
             socket.off("connect", onConnect)
             socket.off("phone-join-room:success", onJoinSuccess)
             socket.off("disconnect", onDisconnect)
+            socket.off("ai:thinking", onAiThinking)
             socket.disconnect()
         }
     }, [sessionId])
@@ -333,6 +391,9 @@ const CameraPage = () => {
         }
 
         setIsSending(true)
+        setThinkingStep("uploading")
+        setThinkingMessage("Thinking...")
+        setThinkingModel(selectedModel)
 
         try {
             let fileToSend: File | null = rawFile || null
@@ -343,19 +404,22 @@ const CameraPage = () => {
             if (!fileToSend) {
                 toast.error("ไม่พบข้อมูลไฟล์รูปภาพ กรุณาถ่ายภาพหรือเลือกไฟล์ใหม่อีกครั้ง")
                 setIsSending(false)
+                setThinkingStep(null)
                 return
             }
 
             const pb = new PlayBook()
-            await pb.uploadImageToAI(fileToSend, sessionId)
+            await pb.uploadImageToAI(fileToSend, sessionId, selectedModel)
 
             setIsSending(false)
+            setThinkingStep(null)
             setIsSuccess(true)
             setLastSentImage(imageSrc)
-            toast.success("ส่งรูปภาพไปยังหน้าจอหลักเรียบร้อยแล้ว!")
+            toast.success("AI วิเคราะห์และส่งข้อมูลไปยังหน้าจอหลักเรียบร้อยแล้ว!")
         } catch (err: any) {
             console.error("Upload to AI error:", err)
             setIsSending(false)
+            setThinkingStep(null)
             const errorMsg = err?.response?.data?.message || err?.message || "เกิดข้อผิดพลาดในการส่งรูปภาพ"
             toast.error(`ส่งรูปภาพไม่สำเร็จ: ${errorMsg}`)
         }
@@ -423,7 +487,121 @@ const CameraPage = () => {
                             {sessionId || "ไม่ระบุ"}
                         </span>
                     </div>
+
+                    {/* AI Model Selector */}
+                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-3 text-xs font-[k-regular]">
+                        <span className="text-muted-foreground flex items-center gap-1.5 shrink-0">
+                            <span>เลือก AI Model</span>
+                        </span>
+                        <Select
+                            value={selectedModel}
+                            onValueChange={handleModelChange}
+                            disabled={isSending}
+                        >
+                            <SelectTrigger className="h-8 w-[210px] text-xs font-[k-medium] rounded-lg border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/70 cursor-pointer">
+                                <SelectValue placeholder="เลือกโมเดล AI">
+                                    {selectedModel}
+                                </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent className="font-[k-regular]">
+                                {AI_MODEL_OPTIONS.map((model) => (
+                                    <SelectItem
+                                        key={model.value}
+                                        value={model.value}
+                                        className="text-xs font-[k-regular] cursor-pointer"
+                                    >
+                                        {model.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
                 </div>
+
+                {/* AI Thinking Trace (shadcn/ui Trace) ขณะส่งรูปภาพให้ AI คิด */}
+                {isSending && (
+                    <Card className="rounded-2xl border bg-card p-4 shadow-sm font-[k-regular]">
+                        <CardContent className="p-0 font-[k-regular]">
+                            <Trace className="font-[k-regular]">
+                                <TraceCollapsible defaultOpen>
+                                    <TraceCollapsibleTrigger className="font-[k-medium]">
+                                        <TraceLine status="running" className="font-[k-medium]">
+                                            <TraceIcon>
+                                                <Spinner />
+                                            </TraceIcon>
+                                            <TraceTitle className="font-[k-medium]">
+                                                {thinkingMessage || "Thinking..."}
+                                            </TraceTitle>
+                                            {thinkingModel && (
+                                                <TraceDescription className="font-[k-light]">{thinkingModel}</TraceDescription>
+                                            )}
+                                        </TraceLine>
+                                    </TraceCollapsibleTrigger>
+                                    <TraceCollapsibleContent className="font-[k-regular]">
+                                        <Trace className="font-[k-regular]">
+                                            <TraceLine
+                                                status={
+                                                    thinkingStep === "uploading" || thinkingStep === "received"
+                                                        ? "running"
+                                                        : undefined
+                                                }
+                                                className="font-[k-regular]"
+                                            >
+                                                <TraceIcon>
+                                                    {thinkingStep === "uploading" || thinkingStep === "received" ? (
+                                                        <Spinner />
+                                                    ) : (
+                                                        <Check className="text-emerald-500" />
+                                                    )}
+                                                </TraceIcon>
+                                                <TraceTitle className="font-[k-regular]">Receieved image from phone</TraceTitle>
+                                            </TraceLine>
+
+                                            <TraceLine
+                                                status={
+                                                    thinkingStep === "analyzing"
+                                                        ? "running"
+                                                        : thinkingStep === "extracting"
+                                                            ? undefined
+                                                            : "pending"
+                                                }
+                                                className="font-[k-regular]"
+                                            >
+                                                <TraceIcon>
+                                                    {thinkingStep === "analyzing" ? (
+                                                        <Spinner />
+                                                    ) : thinkingStep === "extracting" ? (
+                                                        <Check className="text-emerald-500" />
+                                                    ) : (
+                                                        <Clock />
+                                                    )}
+                                                </TraceIcon>
+                                                <TraceTitle className="font-[k-regular]">Analyze image</TraceTitle>
+                                                {thinkingModel && (
+                                                    <TraceDescription className="font-[k-light]">{thinkingModel}</TraceDescription>
+                                                )}
+                                            </TraceLine>
+
+                                            <TraceLine
+                                                status={thinkingStep === "extracting" ? "running" : "pending"}
+                                                className="font-[k-regular]"
+                                            >
+                                                <TraceIcon>
+                                                    {thinkingStep === "extracting" ? (
+                                                        <Spinner />
+                                                    ) : (
+                                                        <Clock />
+                                                    )}
+                                                </TraceIcon>
+                                                <TraceTitle className="font-[k-regular]">Extracting</TraceTitle>
+                                            </TraceLine>
+                                        </Trace>
+                                    </TraceCollapsibleContent>
+                                </TraceCollapsible>
+                            </Trace>
+                        </CardContent>
+                    </Card>
+                )}
 
                 {/* Success View */}
                 {isSuccess ? (
@@ -667,7 +845,7 @@ const CameraPage = () => {
                                                                     if (capabilities.focusMode?.includes("continuous")) {
                                                                         track.applyConstraints({
                                                                             advanced: [{ focusMode: "continuous" }]
-                                                                        } as any).catch(() => {})
+                                                                        } as any).catch(() => { })
                                                                     }
                                                                 } catch {
                                                                     // ignore

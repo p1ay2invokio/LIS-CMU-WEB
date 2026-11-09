@@ -338,7 +338,7 @@ export default function HistoryPage() {
                                                     <Avatar className="size-8 rounded-lg border border-sidebar-border">
                                                         <AvatarImage src={user?.avatar} alt={displayName} />
                                                         <AvatarFallback suppressHydrationWarning className="rounded-lg bg-primary/10 text-primary font-[k-medium] text-xs">
-                                                            {user?.initials || displayName?.slice(0, 2).toUpperCase() || "LI"}
+                                                            {user?.initials || displayUsername?.slice(0, 2).toUpperCase() || "LI"}
                                                         </AvatarFallback>
                                                     </Avatar>
                                                     {/* สถานะ Online (จุดสีเขียว) */}

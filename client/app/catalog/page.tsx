@@ -53,6 +53,17 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import { Toaster } from "@/components/ui/sonner"
+import { Spinner } from "@/components/ui/spinner"
+import {
+    Trace,
+    TraceLine,
+    TraceIcon,
+    TraceTitle,
+    TraceDescription,
+    TraceCollapsible,
+    TraceCollapsibleTrigger,
+    TraceCollapsibleContent,
+} from "@/components/ui/trace"
 import { toast } from "sonner"
 import {
     BookOpen,
@@ -92,6 +103,12 @@ import {
     Check,
     X,
     Lock,
+    Maximize2,
+    Minimize2,
+    ChevronLeft,
+    ChevronRight,
+    ChevronsLeft,
+    ChevronsRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { EditBookDialog } from "@/components/edit-book-dialog"
@@ -132,6 +149,37 @@ const DEFAULT_COLLECTIONS = [
     { code: "5", description: "มุมเด็กและปฐมวัย" },
     { code: "อื่นๆ", description: "อื่นๆ (ระบุเพิ่มเติม)" },
 ]
+
+// ชื่อคำอธิบายของ MARC 21 Tags ที่พบบ่อย สำหรับแสดงคู่กับ Tag ที่ผู้ใช้กดเพิ่มเอง
+const MARC_TAG_LABELS: Record<string, string> = {
+    "010": "หมายเลขควบคุม LC",
+    "020": "ISBN",
+    "022": "ISSN",
+    "041": "รหัสภาษา",
+    "050": "เลขเรียกหนังสือ LC",
+    "082": "เลขหมู่ดิวอี้ (DDC)",
+    "100": "ชื่อผู้แต่งหลัก",
+    "110": "ผู้แต่งนิติบุคคล",
+    "245": "ชื่อเรื่อง",
+    "246": "ชื่อเรื่องอื่นๆ",
+    "250": "ครั้งที่พิมพ์",
+    "260": "ข้อมูลการพิมพ์",
+    "264": "การผลิต/เผยแพร่",
+    "300": "ลักษณะกายภาพ",
+    "440": "ชื่อชุด",
+    "490": "แถลงชุด (Series)",
+    "500": "หมายเหตุทั่วไป",
+    "504": "หมายเหตุบรรณานุกรม",
+    "505": "หมายเหตุสารบัญ",
+    "520": "สาระสังเขป / เรื่องย่อ",
+    "600": "หัวเรื่องบุคคล",
+    "650": "หัวเรื่อง",
+    "651": "หัวเรื่องภูมิศาสตร์",
+    "700": "ผู้แต่งร่วม",
+    "710": "นิติบุคคลร่วม",
+    "856": "ที่อยู่สื่ออิเล็กทรอนิกส์ (URL)",
+    "902": "ภาพปก",
+}
 
 // Initial Form Data สำหรับการลงรายการบรรณานุกรม
 const INITIAL_FORM_DATA = {
@@ -178,12 +226,15 @@ const INITIAL_FORM_DATA = {
     purchasePrice: "", // 541 Purchase price
 }
 
-// LocalStorage Keys สำหรับจดจำค่าล่าสุดของประเภททรัพยากรและสถานที่จัดเก็บ
+// LocalStorage Keys สำหรับจดจำค่าล่าสุดของประเภททรัพยากร สถานที่จัดเก็บ และการแสดงผล Modal
 const STORAGE_KEYS = {
     RESOURCE_TYPE: "catalog_last_resource_type",
     LOCATION: "catalog_last_location",
     CUSTOM_LOCATION: "catalog_last_custom_location",
     CUSTOM_RESOURCE_TYPE: "catalog_last_custom_resource_type",
+    MODAL_FULLSCREEN: "catalog_modal_fullscreen",
+    FORM_LAYOUT: "catalog_form_layout",
+    GENERAL_INFO_OPEN: "catalog_general_info_open",
 }
 
 // ฟังก์ชันดึงค่าเริ่มต้นของฟอร์ม โดยโหลดค่าประเภททรัพยากรและสถานที่จัดเก็บล่าสุดจาก localStorage
@@ -263,16 +314,121 @@ const Catalog = () => {
         completedTitles: 0,
     })
     const [statusFilter, setStatusFilter] = React.useState<"all" | "pending" | "completed">("all")
+    const [searchQuery, setSearchQuery] = React.useState<string>("")
+    const [debouncedSearch, setDebouncedSearch] = React.useState<string>("")
+    const [searchField, setSearchField] = React.useState<"all" | "title" | "author" | "isbn">("all")
+    const [currentPage, setCurrentPage] = React.useState<number>(1)
+    const [serverTotal, setServerTotal] = React.useState<number | null>(null)
+    const [isServerPaginated, setIsServerPaginated] = React.useState<boolean>(false)
+    const ITEMS_PER_PAGE = 20
     const [isUpdatingStatus, setIsUpdatingStatus] = React.useState<number | null>(null)
+
+    // Debounce คำค้นหา 250ms เพื่อไม่ให้ยิง API ถี่เกินไปขณะพิมพ์
+    React.useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(searchQuery.trim())
+        }, 250)
+        return () => clearTimeout(timer)
+    }, [searchQuery])
 
     // State สำหรับ Modal ลงรายการ
     const [isModalOpen, setIsModalOpen] = React.useState<boolean>(false)
     const [isSubmitting, setIsSubmitting] = React.useState<boolean>(false)
     const [formData, setFormData] = React.useState(INITIAL_FORM_DATA)
     const [formLayout, setFormLayout] = React.useState<"grid" | "list">("grid")
+    const [isModalFullscreen, setIsModalFullscreen] = React.useState<boolean>(false)
+
+    const handleToggleFullscreen = () => {
+        setIsModalFullscreen((prev) => {
+            const next = !prev
+            if (typeof window !== "undefined") {
+                localStorage.setItem(STORAGE_KEYS.MODAL_FULLSCREEN, String(next))
+            }
+            return next
+        })
+    }
+
+    const handleChangeFormLayout = (layout: "grid" | "list") => {
+        setFormLayout(layout)
+        if (typeof window !== "undefined") {
+            localStorage.setItem(STORAGE_KEYS.FORM_LAYOUT, layout)
+        }
+    }
+
+    const [isGeneralInfoOpen, setIsGeneralInfoOpen] = React.useState<boolean>(true)
+
+    const handleToggleGeneralInfo = () => {
+        setIsGeneralInfoOpen((prev) => {
+            const next = !prev
+            if (typeof window !== "undefined") {
+                localStorage.setItem(STORAGE_KEYS.GENERAL_INFO_OPEN, String(next))
+            }
+            return next
+        })
+    }
+
+    // State สำหรับการเพิ่ม MARC Tag ใหม่ด้วยตัวเองใน Modal
+    const [customTags, setCustomTags] = React.useState<Array<{ id: string; tag: string; value: string }>>([])
+    const [isAddTagDialogOpen, setIsAddTagDialogOpen] = React.useState<boolean>(false)
+    const [newTagInput, setNewTagInput] = React.useState<string>("")
+
+    const handleConfirmAddTag = (e?: React.FormEvent) => {
+        if (e) e.preventDefault()
+        const raw = newTagInput.trim()
+        const digitsOnly = raw.replace(/\D/g, "")
+        if (!digitsOnly) {
+            toast.error("กรุณาระบุหมายเลข Tag เป็นตัวเลข (เช่น 050, 490, 500, 520)")
+            return
+        }
+        const tagNum = parseInt(digitsOnly, 10)
+        if (isNaN(tagNum) || tagNum <= 0 || tagNum > 999) {
+            toast.error("หมายเลข MARC Tag ต้องอยู่ระหว่าง 001 - 999")
+            return
+        }
+        const formattedTag = String(tagNum).padStart(3, "0")
+        const newId = `custom-tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        setCustomTags((prev) => [
+            ...prev,
+            {
+                id: newId,
+                tag: formattedTag,
+                value: "",
+            },
+        ])
+        setNewTagInput("")
+        setIsAddTagDialogOpen(false)
+        toast.success(`เพิ่มช่องกรอกสำหรับ Tag ${formattedTag} เรียบร้อยแล้ว`)
+    }
+
+    const handleCustomTagValueChange = (id: string, value: string) => {
+        setCustomTags((prev) =>
+            prev.map((item) => (item.id === id ? { ...item, value } : item))
+        )
+    }
+
+    const handleRemoveCustomTag = (id: string) => {
+        setCustomTags((prev) => {
+            const target = prev.find((item) => item.id === id)
+            if (target) {
+                const tagNum = parseInt(target.tag.replace(/\D/g, ""), 10)
+                if (tagNum === 50) {
+                    setFormData((f) => ({ ...f, lcCallItem: "", lcCallClass: "" }))
+                } else if (tagNum === 520) {
+                    setFormData((f) => ({ ...f, summary: "" }))
+                }
+            }
+            return prev.filter((item) => item.id !== id)
+        })
+    }
 
     const [qrModal, setQrModal] = React.useState<boolean>(false)
     const [isPhoneConnected, setIsPhoneConnected] = React.useState<boolean>(false)
+
+    // State สำหรับแสดง Trace ขณะที่ AI กำลังคิดและสกัดข้อมูลจากรูปภาพ
+    const [isAiThinking, setIsAiThinking] = React.useState<boolean>(false)
+    const [aiThinkingStep, setAiThinkingStep] = React.useState<"received" | "analyzing" | "extracting" | null>(null)
+    const [aiThinkingMessage, setAiThinkingMessage] = React.useState<string>("")
+    const [aiThinkingModel, setAiThinkingModel] = React.useState<string>("")
 
     // State สำหรับ Modal ตรวจสอบ ISBN ซ้ำในระบบ
     const [duplicateBook, setDuplicateBook] = React.useState<any>(null)
@@ -360,14 +516,20 @@ const Catalog = () => {
         }
     }
 
-    // ฟังก์ชันดึงข้อมูลทั้งหมดจากฐานข้อมูลแบบเรียลไทม์
+    // ฟังก์ชันดึงข้อมูลจากฐานข้อมูลแบบแบ่งหน้าทีละ 20 รายการจากฝั่ง Server (Server-side Pagination)
     const fetchAllData = React.useCallback(async () => {
         let playbook = new PlayBook()
         try {
             const [collections_res, materials_res, books_res, stats_res] = await Promise.all([
                 playbook.collections().catch(() => []),
                 playbook.materials().catch(() => []),
-                playbook.getBooks().catch(() => []),
+                playbook.getBooks({
+                    page: currentPage,
+                    limit: ITEMS_PER_PAGE,
+                    status: statusFilter,
+                    search: debouncedSearch,
+                    searchField,
+                }).catch(() => []),
                 playbook.getStats().catch(() => null),
             ])
 
@@ -377,30 +539,45 @@ const Catalog = () => {
             if (Array.isArray(materials_res) && materials_res.length > 0) {
                 setMaterials(materials_res)
             }
-            if (Array.isArray(books_res)) {
-                const mapped = books_res.map((b: any) => ({
-                    id: `B${String(b.bibid).padStart(3, '0')}`,
-                    bibid: b.bibid,
-                    title: b.title || "ไม่มีชื่อเรื่อง",
-                    author: b.author || "-",
-                    isbn: b.isbn || "-",
-                    callNumber: [b.call_nmbr1, b.call_nmbr2, b.call_nmbr3].filter(Boolean).join(" ") || "-",
-                    category: b.category || "หนังสือ",
-                    copyCount: b.copyCount || 1,
-                    barcodes: b.barcodes || (b.barcode ? [b.barcode] : ["-"]),
-                    barcode: b.barcode || "-",
-                    date: b.create_dt ? new Date(b.create_dt).toLocaleDateString('th-TH') : "วันนี้",
-                    status: b.status || "รอตรวจสอบ",
-                }))
-                setItems(mapped)
+
+            const rawList = Array.isArray(books_res)
+                ? books_res
+                : Array.isArray(books_res?.data)
+                    ? books_res.data
+                    : []
+
+            const mapped = rawList.map((b: any) => ({
+                id: `B${String(b.bibid).padStart(3, '0')}`,
+                bibid: b.bibid,
+                title: b.title || "ไม่มีชื่อเรื่อง",
+                author: b.author || "-",
+                isbn: b.isbn || "-",
+                callNumber: [b.call_nmbr1, b.call_nmbr2, b.call_nmbr3].filter(Boolean).join(" ") || "-",
+                category: b.category || "หนังสือ",
+                copyCount: b.copyCount || 1,
+                barcodes: b.barcodes || (b.barcode ? [b.barcode] : ["-"]),
+                barcode: b.barcode || "-",
+                date: b.create_dt ? new Date(b.create_dt).toLocaleDateString('th-TH') : "วันนี้",
+                status: b.status || "รอตรวจสอบ",
+            }))
+
+            setItems(mapped)
+
+            if (books_res && !Array.isArray(books_res) && typeof books_res.total === "number") {
+                setIsServerPaginated(true)
+                setServerTotal(books_res.total)
+            } else {
+                setIsServerPaginated(false)
+                setServerTotal(null)
             }
+
             if (stats_res) {
                 setStats(stats_res)
             }
         } catch (err) {
             console.error("Failed to load catalog data:", err)
         }
-    }, [])
+    }, [currentPage, statusFilter, debouncedSearch, searchField])
 
     // ฟังก์ชันสลับ/อัปเดตสถานะการตรวจสอบ (รอตรวจสอบ <-> เสร็จสิ้น - เฉพาะ Role 1)
     const handleToggleStatus = async (bibid: number, currentStatus: string) => {
@@ -425,16 +602,53 @@ const Catalog = () => {
         }
     }
 
-    // กรองรายการหนังสือตามแท็บสถานะที่เลือก
+    // กรองรายการหนังสือตามแท็บสถานะที่เลือกและคำค้นหา (ชื่อเรื่อง, ผู้แต่ง, ISBN)
     const filteredItems = React.useMemo(() => {
+        let list = items
         if (statusFilter === "pending") {
-            return items.filter(i => i.status === "รอตรวจสอบ")
+            list = list.filter(i => i.status === "รอตรวจสอบ")
+        } else if (statusFilter === "completed") {
+            list = list.filter(i => i.status === "เสร็จสิ้น")
         }
-        if (statusFilter === "completed") {
-            return items.filter(i => i.status === "เสร็จสิ้น")
+
+        const q = searchQuery.trim().toLowerCase()
+        if (!q) return list
+
+        const qCleanIsbn = q.replace(/[-\s]/g, "")
+
+        return list.filter((i) => {
+            const titleStr = String(i.title || "").toLowerCase()
+            const authorStr = String(i.author || "").toLowerCase()
+            const isbnStr = String(i.isbn || "").toLowerCase()
+            const isbnClean = isbnStr.replace(/[-\s]/g, "")
+
+            const matchTitle = titleStr.includes(q)
+            const matchAuthor = authorStr.includes(q)
+            const matchIsbn = isbnStr.includes(q) || (qCleanIsbn.length > 0 && isbnClean.includes(qCleanIsbn))
+
+            if (searchField === "title") return matchTitle
+            if (searchField === "author") return matchAuthor
+            if (searchField === "isbn") return matchIsbn
+            return matchTitle || matchAuthor || matchIsbn
+        })
+    }, [items, statusFilter, searchQuery, searchField])
+
+    // รีเซ็ตกลับไปหน้า 1 เสมอเมื่อมีการเปลี่ยนคำค้นหา ขอบเขตการค้นหา หรือตัวกรองสถานะ
+    React.useEffect(() => {
+        setCurrentPage(1)
+    }, [statusFilter, searchQuery, searchField])
+
+    // คำนวณรายการสำหรับแสดงผลในหน้าปัจจุบัน (หน้าละ 20 รายการ รองรับทั้ง Server-side และ Client-side fallback)
+    const totalFilteredCount = isServerPaginated && serverTotal !== null ? serverTotal : filteredItems.length
+    const totalPages = Math.max(1, Math.ceil(totalFilteredCount / ITEMS_PER_PAGE))
+    const safeCurrentPage = Math.min(currentPage, totalPages)
+    const paginatedItems = React.useMemo(() => {
+        if (isServerPaginated) {
+            return items
         }
-        return items
-    }, [items, statusFilter])
+        const startIdx = (safeCurrentPage - 1) * ITEMS_PER_PAGE
+        return filteredItems.slice(startIdx, startIdx + ITEMS_PER_PAGE)
+    }, [isServerPaginated, items, filteredItems, safeCurrentPage])
 
     // ฟังก์ชันบันทึกข้อมูล
     const handleSubmit = async (e: React.FormEvent) => {
@@ -473,6 +687,9 @@ const Catalog = () => {
             const effectiveCallNumber = rawDewey || "-"
             const submissionData = {
                 ...formData,
+                lcCallItem: "",
+                lcCallClass: "",
+                summary: "",
                 call_nmbr1: parsedCall1,
                 call_nmbr2: parsedCall2,
                 call_nmbr3: parsedCall3,
@@ -480,6 +697,12 @@ const Catalog = () => {
                 status: "รอตรวจสอบ", // เมื่อเพิ่มหนังสือเข้าไป สถานะการตรวจสอบจะเป็น รอตรวจสอบ เสมอ
                 callNumber: effectiveCallNumber,
                 userid: user?.userid || 1,
+                customTags: customTags
+                    .filter((t) => t.tag && t.value.trim() !== "")
+                    .map((t) => ({
+                        tag: t.tag,
+                        value: t.value.trim(),
+                    })),
             }
 
             const response = await playbook.addbook(submissionData)
@@ -516,6 +739,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
 
             setIsModalOpen(false)
             setFormData(getInitialFormData())
+            setCustomTags([])
         } catch (error: any) {
             console.error(error)
             toast.error(error?.response?.data?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณาลองใหม่อีกครั้ง")
@@ -567,13 +791,26 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
 
     let [loading, setLoading] = useState<boolean>(true)
 
-    // โหลดค่าประเภททรัพยากรและสถานที่จัดเก็บล่าสุดจาก localStorage เมื่อเริ่มต้น
+    // โหลดค่าประเภททรัพยากร สถานที่จัดเก็บ และการตั้งค่า Fullscreen ของ Modal ล่าสุดจาก localStorage เมื่อเริ่มต้น
     useEffect(() => {
         if (typeof window !== "undefined") {
             const savedResourceType = localStorage.getItem(STORAGE_KEYS.RESOURCE_TYPE)
             const savedLocation = localStorage.getItem(STORAGE_KEYS.LOCATION)
             const savedCustomLocation = localStorage.getItem(STORAGE_KEYS.CUSTOM_LOCATION)
             const savedCustomResourceType = localStorage.getItem(STORAGE_KEYS.CUSTOM_RESOURCE_TYPE)
+            const savedFullscreen = localStorage.getItem(STORAGE_KEYS.MODAL_FULLSCREEN)
+            const savedLayout = localStorage.getItem(STORAGE_KEYS.FORM_LAYOUT)
+            const savedGeneralInfoOpen = localStorage.getItem(STORAGE_KEYS.GENERAL_INFO_OPEN)
+
+            if (savedFullscreen !== null) {
+                setIsModalFullscreen(savedFullscreen === "true")
+            }
+            if (savedLayout === "grid" || savedLayout === "list") {
+                setFormLayout(savedLayout)
+            }
+            if (savedGeneralInfoOpen !== null) {
+                setIsGeneralInfoOpen(savedGeneralInfoOpen !== "false")
+            }
 
             if (savedResourceType || savedLocation || savedCustomLocation || savedCustomResourceType) {
                 setFormData((prev) => ({
@@ -596,8 +833,37 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
         if (!decoded) return
         setUser(decoded)
 
+        socket.on("ai:thinking", (payload: any) => {
+            console.log("AI Thinking Trace:", payload)
+            const step = payload?.step || "analyzing"
+            const msg = "Thinking..."
+            const modelName = payload?.model || ""
+
+            setIsAiThinking(true)
+            setAiThinkingStep(step)
+            setAiThinkingMessage(msg)
+            if (modelName) {
+                setAiThinkingModel(modelName)
+            }
+
+            // ปิดหน้าต่าง QR Code อัตโนมัติเมื่อเริ่มส่งรูปมาให้ AI คิด
+            setQrModal(false)
+        })
+
+        socket.on("ai:error", (payload: any) => {
+            console.error("AI Error:", payload)
+            setIsAiThinking(false)
+            setAiThinkingStep(null)
+            toast.error(payload?.message || "เกิดข้อผิดพลาดขณะ AI วิเคราะห์รูปภาพ", {
+                description: payload?.error || "กรุณาลองส่งรูปภาพใหม่อีกครั้ง",
+                duration: 5000,
+            })
+        })
+
         socket.on("ai:answer", (payload) => {
             console.log("Received AI answer:", payload)
+            setIsAiThinking(false)
+            setAiThinkingStep(null)
 
             let rawData = payload?.data !== undefined ? payload.data : payload
 
@@ -680,7 +946,8 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                 setFormData((prev) => ({
                     ...prev,
                     isbn: isbn || prev.isbn,
-                    lcCallItem: lc || prev.lcCallItem,
+                    lcCallItem: "",
+                    lcCallClass: "",
                     deweyCallNumber: ddc || prev.deweyCallNumber,
                     callNumber: ddc || prev.callNumber,
                     author: author || prev.author,
@@ -696,11 +963,58 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                     coAuthor2: coAuthor2 || prev.coAuthor2,
                 }))
 
+                // ตรวจสอบ Tag อื่นๆ ที่ AI อ่านเจอจากรูปภาพแต่ยังไม่มีช่อง Input มาตรฐานบนหน้าเว็บ
+                const handledKeys = new Set([
+                    "020", "020_1", "isbn", "ISBN",
+                    "082", "082_1", "ddc", "DDC", "deweyCallNumber", "dewey", "callNumber",
+                    "100", "100_1", "author", "Author", "name",
+                    "245", "245_1", "title", "Title", "bookTitle",
+                    "250", "250_1", "edition", "Edition",
+                    "260", "260_1", "260_a", "publicationPlace", "place", "city",
+                    "260_2", "260_b", "publisher", "press",
+                    "260_3", "260_c", "publicationYear", "year", "date",
+                    "300", "300_1", "300_a", "physicalExtent", "pages",
+                    "650_1", "650", "subject1", "subject",
+                    "650_2", "subject2",
+                    "700_1", "700", "coAuthor1", "coauthor1",
+                    "700_2", "coAuthor2", "coauthor2",
+                ])
+
+                const detectedExtraTags: Array<{ id: string; tag: string; value: string }> = []
+                for (const [key, val] of Object.entries(d)) {
+                    if (handledKeys.has(key)) continue
+                    if (val === undefined || val === null) continue
+                    const strVal = typeof val === "object" ? "" : String(val).trim()
+                    if (!strVal || strVal === "-" || strVal === "None" || strVal === "null") continue
+
+                    // ดึงเลข Tag 3 หลักจากชื่อ key เช่น "050", "500", "490_1", "650_3"
+                    const tagMatch = key.match(/^(\d{1,3})/)
+                    if (tagMatch && tagMatch[1]) {
+                        const tagNum = parseInt(tagMatch[1], 10)
+                        if (tagNum > 0 && tagNum <= 999) {
+                            const formattedTag = String(tagNum).padStart(3, "0")
+                            detectedExtraTags.push({
+                                id: `ai-tag-${Date.now()}-${key}-${Math.random().toString(36).slice(2, 6)}`,
+                                tag: formattedTag,
+                                value: strVal,
+                            })
+                        }
+                    }
+                }
+
+                // แทนที่รายการ customTags ด้วยรายการที่ AI อ่านได้ในรอบนี้ เพื่อไม่ให้ Tag เก่าค้าง
+                setCustomTags(detectedExtraTags)
+
                 setIsModalOpen(true)
-                toast.success("AI ดึงข้อมูลลงตาม MARC Tag สำเร็จ!", {
-                    duration: 4000,
-                    icon: <Sparkles className="text-purple-500 size-5" />
-                })
+                toast.success(
+                    detectedExtraTags.length > 0
+                        ? `AI ดึงข้อมูลสำเร็จ และเพิ่มช่อง Tag ใหม่อัตโนมัติ (${detectedExtraTags.map(t => t.tag).join(", ")})!`
+                        : "AI ดึงข้อมูลลงตาม MARC Tag สำเร็จ!",
+                    {
+                        duration: 4000,
+                        icon: <Sparkles className="text-purple-500 size-5" />
+                    }
+                )
             } else if (payload) {
                 toast.success("AI Cataloging Successfully!")
             }
@@ -730,6 +1044,8 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
         socket.emit("computer-join-room", decoded.username)
 
         return () => {
+            socket.off("ai:thinking")
+            socket.off("ai:error")
             socket.off("ai:answer")
             socket.off("join-room:success")
             socket.off("computer-join-room:success")
@@ -914,13 +1230,6 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             </div>
                                         </div>
 
-                                        <div className="px-2 py-1.5 bg-muted/50 rounded-md my-1 text-xs">
-                                            <div className="flex items-center gap-1.5 text-muted-foreground font-[k-light]">
-                                                <ShieldCheck className="size-3.5 text-emerald-600" />
-                                                <span>สถานะ: <strong className="text-foreground font-[k-regular]">ฝ่าย IT</strong></span>
-                                            </div>
-                                        </div>
-
                                         <DropdownMenuSeparator />
 
                                         <DropdownMenuItem
@@ -950,7 +1259,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             className="cursor-pointer font-[k-medium] text-sm text-destructive"
                                         >
                                             <LogOut className="mr-2 size-4" />
-                                            <span>ออกจากระบบ (Logout)</span>
+                                            <span>ออกจากระบบ</span>
                                         </DropdownMenuItem>
                                     </DropdownMenuContent>
                                 </DropdownMenu>
@@ -1030,67 +1339,13 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                 </p>
                             </div>
 
-                            {/* Action Buttons & Statistics Cards (ดึงข้อมูลจริงจาก Database) */}
-                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                                {/* Card 1: ชื่อเรื่องทั้งหมด */}
-                                <div
-                                    onClick={() => setStatusFilter("all")}
-                                    className={cn(
-                                        "rounded-xl border bg-card p-4 shadow-xs transition-all cursor-pointer hover:border-primary/50",
-                                        statusFilter === "all" ? "ring-2 ring-primary/20 border-primary" : ""
-                                    )}
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs text-muted-foreground font-[k-light]">ทั้งหมด</span>
-                                        <BookOpen className="size-4 text-primary" />
-                                    </div>
-                                    <div className="mt-2 flex items-baseline gap-2 justify-center">
-                                        <span className="text-2xl font-bold font-mono">{stats.totalCopies}</span>
-                                    </div>
-                                </div>
-
-                                {/* Card 2: รายการรอตรวจสอบ */}
-                                <div
-                                    onClick={() => setStatusFilter("pending")}
-                                    className={cn(
-                                        "rounded-xl border bg-card p-4 shadow-xs transition-all cursor-pointer hover:border-amber-500/50",
-                                        statusFilter === "pending" ? "ring-2 ring-amber-500/20 border-amber-500" : ""
-                                    )}
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs text-muted-foreground font-[k-light]">รอตรวจสอบ</span>
-                                        <Clock className="size-4 text-amber-500" />
-                                    </div>
-                                    <div className="mt-2 flex items-baselin justify-center gap-2">
-                                        <span className="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400">{stats.pendingTitles}</span>
-                                    </div>
-                                </div>
-
-                                {/* Card 3: ตรวจสอบแล้ว (อนุมัติ) */}
-                                <div
-                                    onClick={() => setStatusFilter("completed")}
-                                    className={cn(
-                                        "rounded-xl border bg-card p-4 shadow-xs transition-all cursor-pointer hover:border-emerald-500/50",
-                                        statusFilter === "completed" ? "ring-2 ring-emerald-500/20 border-emerald-500" : ""
-                                    )}
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs text-muted-foreground font-[k-light]">ตรวจสอบแล้ว</span>
-                                        <CheckCircle2 className="size-4 text-emerald-500" />
-                                    </div>
-                                    <div className="mt-2 flex justify-center items-baseline gap-2">
-                                        <span className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">{stats.completedTitles}</span>
-                                    </div>
-                                </div>
-                            </div>
-
                             {/* Recent Catalog Items Table */}
                             <div className="rounded-xl border bg-card shadow-xs">
                                 <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between border-b">
                                     <div>
                                         <h3 className="font-[k-medium] text-base">รายการหนังสือในระบบ</h3>
                                         <p className="font-[k-light] text-xs text-muted-foreground">
-                                            ตรวจสอบและจัดการข้อมูลทางบรรณานุกรมในฐานข้อมูล ({filteredItems.length} รายการ)
+                                            ตรวจสอบและจัดการข้อมูลทางบรรณานุกรมในฐานข้อมูล ({totalFilteredCount} รายการ)
                                         </p>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
@@ -1143,6 +1398,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             size="sm"
                                             onClick={() => {
                                                 setFormData(getInitialFormData())
+                                                setCustomTags([])
                                                 setIsModalOpen(true)
                                             }}
                                             className="font-[k-medium] cursor-pointer"
@@ -1150,6 +1406,101 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             <PlusCircle className="mr-1.5 size-4" />
                                             เพิ่มรายการใหม่
                                         </Button>
+                                    </div>
+                                </div>
+
+                                {/* แถบค้นหาหนังสือ (Search Bar: ชื่อเรื่อง / ผู้แต่ง / ISBN + กรองสถานะ) */}
+                                <div className="flex flex-col gap-3 px-4 py-3 bg-muted/20 border-b sm:flex-row sm:items-center">
+                                    {/* ช่องพิมพ์คำค้นหา */}
+                                    <div className="relative flex-1">
+                                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                                        <Input
+                                            type="text"
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            placeholder={
+                                                searchField === "title"
+                                                    ? "ค้นหาด้วยชื่อเรื่อง..."
+                                                    : searchField === "author"
+                                                        ? "ค้นหาด้วยชื่อผู้แต่ง..."
+                                                        : searchField === "isbn"
+                                                            ? "ค้นหาด้วยหมายเลข ISBN..."
+                                                            : "ค้นหาจากชื่อเรื่อง, ชื่อผู้แต่ง หรือหมายเลข ISBN..."
+                                            }
+                                            className="pl-9 pr-9 h-9 text-sm font-[k-regular] bg-background"
+                                        />
+                                        {searchQuery && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSearchQuery("")}
+                                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer p-0.5 rounded-full hover:bg-muted"
+                                                title="ล้างคำค้นหา"
+                                            >
+                                                <X className="size-3.5" />
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* ตัวเลือกขอบเขตการค้นหา และ ตัวเลือกสถานะ */}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        {/* เลือกฟิลด์ที่จะค้นหา */}
+                                        <Select
+                                            value={searchField}
+                                            onValueChange={(val) => setSearchField((val as any) || "all")}
+                                        >
+                                            <SelectTrigger className="h-9 w-[165px] text-xs font-[k-medium] bg-background cursor-pointer">
+                                                <SelectValue placeholder="ค้นหาจาก">
+                                                    {searchField === "all"
+                                                        ? "ค้นจาก: ทั้งหมด"
+                                                        : searchField === "title"
+                                                            ? "ค้นจาก: ชื่อเรื่อง"
+                                                            : searchField === "author"
+                                                                ? "ค้นจาก: ชื่อผู้แต่ง"
+                                                                : "ค้นจาก: ISBN"}
+                                                </SelectValue>
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all" className="text-xs font-[k-regular] cursor-pointer">
+                                                    ทั้งหมด (ชื่อเรื่อง / ผู้แต่ง / ISBN)
+                                                </SelectItem>
+                                                <SelectItem value="title" className="text-xs font-[k-regular] cursor-pointer">
+                                                    เฉพาะชื่อเรื่อง
+                                                </SelectItem>
+                                                <SelectItem value="author" className="text-xs font-[k-regular] cursor-pointer">
+                                                    เฉพาะชื่อผู้แต่ง
+                                                </SelectItem>
+                                                <SelectItem value="isbn" className="text-xs font-[k-regular] cursor-pointer">
+                                                    เฉพาะหมายเลข ISBN
+                                                </SelectItem>
+                                            </SelectContent>
+                                        </Select>
+
+                                        {/* เลือกสถานะ (ทั้งหมด / รอตรวจสอบ / ตรวจสอบแล้ว) */}
+                                        <Select
+                                            value={statusFilter}
+                                            onValueChange={(val) => setStatusFilter((val as any) || "all")}
+                                        >
+                                            <SelectTrigger className="h-9 w-[160px] text-xs font-[k-medium] bg-background cursor-pointer">
+                                                <SelectValue placeholder="สถานะ">
+                                                    {statusFilter === "all"
+                                                        ? "สถานะ: ทั้งหมด"
+                                                        : statusFilter === "pending"
+                                                            ? "สถานะ: รอตรวจสอบ"
+                                                            : "สถานะ: ตรวจสอบแล้ว"}
+                                                </SelectValue>
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all" className="text-xs font-[k-regular] cursor-pointer">
+                                                    ทั้งหมด ({stats.totalTitles})
+                                                </SelectItem>
+                                                <SelectItem value="pending" className="text-xs font-[k-regular] cursor-pointer">
+                                                    รอตรวจสอบ ({stats.pendingTitles})
+                                                </SelectItem>
+                                                <SelectItem value="completed" className="text-xs font-[k-regular] cursor-pointer">
+                                                    ตรวจสอบแล้ว ({stats.completedTitles})
+                                                </SelectItem>
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                 </div>
 
@@ -1166,10 +1517,28 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-border">
-                                            {filteredItems.length === 0 ? (
+                                            {paginatedItems.length === 0 ? (
                                                 <tr>
                                                     <td colSpan={6} className="px-4 py-10 text-center text-muted-foreground font-[k-light]">
-                                                        {statusFilter === "pending"
+                                                        {searchQuery.trim() ? (
+                                                            <div className="flex flex-col items-center gap-2">
+                                                                <span>
+                                                                    ไม่พบรายการหนังสือที่ตรงกับคำค้นหา <strong className="text-foreground font-[k-medium]">&quot;{searchQuery}&quot;</strong>
+                                                                </span>
+                                                                <Button
+                                                                    type="button"
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    onClick={() => {
+                                                                        setSearchQuery("")
+                                                                        setSearchField("all")
+                                                                    }}
+                                                                    className="h-7 text-xs font-[k-regular] cursor-pointer mt-1"
+                                                                >
+                                                                    ล้างการค้นหา
+                                                                </Button>
+                                                            </div>
+                                                        ) : statusFilter === "pending"
                                                             ? "ไม่มีรายการหนังสือที่รอตรวจสอบในขณะนี้"
                                                             : statusFilter === "completed"
                                                                 ? "ยังไม่มีรายการที่ได้รับการอนุมัติ"
@@ -1177,7 +1546,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                                     </td>
                                                 </tr>
                                             ) : (
-                                                filteredItems.map((item) => (
+                                                paginatedItems.map((item) => (
                                                     <tr
                                                         key={item.id}
                                                         onClick={() => router.push(`/book/${item.bibid}`)}
@@ -1253,15 +1622,134 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                         </tbody>
                                     </table>
                                 </div>
+
+                                {/* ส่วนแบ่งหน้า (Pagination: แสดงหน้าละ 20 รายการ) */}
+                                {totalFilteredCount > 0 && (
+                                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t bg-muted/10 text-xs">
+                                        <div className="text-muted-foreground font-[k-light]">
+                                            แสดงรายการที่{" "}
+                                            <span className="font-mono font-medium text-foreground">
+                                                {(safeCurrentPage - 1) * ITEMS_PER_PAGE + 1}
+                                            </span>{" "}
+                                            -{" "}
+                                            <span className="font-mono font-medium text-foreground">
+                                                {Math.min(safeCurrentPage * ITEMS_PER_PAGE, totalFilteredCount)}
+                                            </span>{" "}
+                                            จากทั้งหมด{" "}
+                                            <span className="font-mono font-medium text-foreground">
+                                                {totalFilteredCount}
+                                            </span>{" "}
+                                            รายการ (หน้า {safeCurrentPage}/{totalPages})
+                                        </div>
+
+                                        <div className="flex items-center gap-1">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safeCurrentPage <= 1}
+                                                onClick={() => setCurrentPage(1)}
+                                                className="h-8 w-8 p-0 cursor-pointer"
+                                                title="หน้าแรก"
+                                            >
+                                                <ChevronsLeft className="size-3.5" />
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safeCurrentPage <= 1}
+                                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                                className="h-8 px-2.5 cursor-pointer font-[k-regular] text-xs flex items-center gap-1"
+                                            >
+                                                <ChevronLeft className="size-3.5" />
+                                                <span className="hidden sm:inline">ก่อนหน้า</span>
+                                            </Button>
+
+                                            {/* หมายเลขหน้า */}
+                                            <div className="flex items-center gap-1 mx-1">
+                                                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                                                    .filter((page) => {
+                                                        if (totalPages <= 5) return true
+                                                        if (page === 1 || page === totalPages) return true
+                                                        return Math.abs(page - safeCurrentPage) <= 1
+                                                    })
+                                                    .reduce<Array<number | string>>((acc, page, idx, arr) => {
+                                                        if (idx > 0 && page - (arr[idx - 1] as number) > 1) {
+                                                            acc.push(`ellipsis-${page}`)
+                                                        }
+                                                        acc.push(page)
+                                                        return acc
+                                                    }, [])
+                                                    .map((item) =>
+                                                        typeof item === "string" ? (
+                                                            <span
+                                                                key={item}
+                                                                className="px-1.5 text-muted-foreground font-mono select-none"
+                                                            >
+                                                                ...
+                                                            </span>
+                                                        ) : (
+                                                            <Button
+                                                                key={item}
+                                                                type="button"
+                                                                variant={safeCurrentPage === item ? "default" : "outline"}
+                                                                size="sm"
+                                                                onClick={() => setCurrentPage(item)}
+                                                                className={cn(
+                                                                    "h-8 min-w-8 px-2 font-mono text-xs cursor-pointer",
+                                                                    safeCurrentPage === item
+                                                                        ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                                                                        : "text-muted-foreground hover:text-foreground"
+                                                                )}
+                                                            >
+                                                                {item}
+                                                            </Button>
+                                                        )
+                                                    )}
+                                            </div>
+
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safeCurrentPage >= totalPages}
+                                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                                className="h-8 px-2.5 cursor-pointer font-[k-regular] text-xs flex items-center gap-1"
+                                            >
+                                                <span className="hidden sm:inline">ถัดไป</span>
+                                                <ChevronRight className="size-3.5" />
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={safeCurrentPage >= totalPages}
+                                                onClick={() => setCurrentPage(totalPages)}
+                                                className="h-8 w-8 p-0 cursor-pointer"
+                                                title="หน้าสุดท้าย"
+                                            >
+                                                <ChevronsRight className="size-3.5" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </main>
                 </SidebarInset>
             </div>
 
-            {/* Modal เพิ่มใหม่ รายการบรรณานุกรม (UI ใหม่: Label ซ้าย, Input ขวา) */}
+            {/* Modal เพิ่มใหม่ รายการบรรณานุกรม (UI ใหม่: Label ซ้าย, Input ขวา + รองรับ Fullscreen) */}
             <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-                <DialogContent className="sm:max-w-4xl lg:max-w-5xl max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden rounded-2xl border shadow-2xl">
+                <DialogContent
+                    className={cn(
+                        "flex flex-col p-0 gap-0 overflow-hidden border shadow-2xl transition-all duration-200",
+                        isModalFullscreen
+                            ? "w-screen h-screen max-w-none sm:max-w-none lg:max-w-none max-h-screen rounded-none border-0"
+                            : "sm:max-w-4xl lg:max-w-5xl max-h-[90vh] rounded-2xl"
+                    )}
+                >
                     {/* ส่วนหัวของ Modal (Header) */}
                     <div className="flex items-center justify-between border-b px-6 py-4 bg-muted/20 shrink-0 pr-14">
                         <div className="flex items-center gap-3">
@@ -1275,56 +1763,207 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                             </div>
                         </div>
 
-                        {/* ปุ่มสลับมุมมอง Layout: 2 คอลัมน์ (ประหยัดพื้นที่) / 1 คอลัมน์ (เต็มแถว) */}
-                        <div className="hidden sm:flex items-center bg-muted/60 p-1 rounded-lg border text-xs font-[k-medium]">
-                            <button
+                        <div className="flex items-center gap-2">
+                            {/* ปุ่มสลับมุมมอง Layout: 2 คอลัมน์ (ประหยัดพื้นที่) / 1 คอลัมน์ (เต็มแถว) */}
+                            <div className="hidden sm:flex items-center bg-muted/60 p-1 rounded-lg border text-xs font-[k-medium]">
+                                <button
+                                    type="button"
+                                    onClick={() => handleChangeFormLayout("grid")}
+                                    className={cn(
+                                        "px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5",
+                                        formLayout === "grid"
+                                            ? "bg-background text-foreground shadow-xs"
+                                            : "text-muted-foreground hover:text-foreground"
+                                    )}
+                                    title="แสดงแบบ 2 คอลัมน์ กะทัดรัด ประหยัดพื้นที่"
+                                >
+                                    <Layers className="size-3.5" />
+                                    <span>2 คอลัมน์</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleChangeFormLayout("list")}
+                                    className={cn(
+                                        "px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5",
+                                        formLayout === "list"
+                                            ? "bg-background text-foreground shadow-xs"
+                                            : "text-muted-foreground hover:text-foreground"
+                                    )}
+                                    title="แสดงแบบแถวเดี่ยว 1 คอลัมน์"
+                                >
+                                    <FileText className="size-3.5" />
+                                    <span>1 คอลัมน์</span>
+                                </button>
+                            </div>
+
+                            {/* ปุ่มสลับโหมดเต็มจอ (Fullscreen Toggle) พร้อมจดจำค่าใน localStorage */}
+                            <Button
                                 type="button"
-                                onClick={() => setFormLayout("grid")}
+                                variant="outline"
+                                size="sm"
+                                onClick={handleToggleFullscreen}
                                 className={cn(
-                                    "px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5",
-                                    formLayout === "grid"
-                                        ? "bg-background text-foreground shadow-xs"
-                                        : "text-muted-foreground hover:text-foreground"
+                                    "h-8 px-2.5 text-xs font-[k-medium] cursor-pointer flex items-center gap-1.5 transition-colors",
+                                    isModalFullscreen
+                                        ? "bg-primary/10 text-primary border-primary/30 hover:bg-primary/15"
+                                        : "bg-background text-muted-foreground hover:text-foreground"
                                 )}
-                                title="แสดงแบบ 2 คอลัมน์ กะทัดรัด ประหยัดพื้นที่"
+                                title={isModalFullscreen ? "ย่อขนาดหน้าต่าง (Exit Fullscreen)" : "ขยายเต็มจอ (Fullscreen)"}
                             >
-                                <Layers className="size-3.5" />
-                                <span>2 คอลัมน์</span>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setFormLayout("list")}
-                                className={cn(
-                                    "px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5",
-                                    formLayout === "list"
-                                        ? "bg-background text-foreground shadow-xs"
-                                        : "text-muted-foreground hover:text-foreground"
+                                {isModalFullscreen ? (
+                                    <>
+                                        <Minimize2 className="size-3.5" />
+                                        <span className="hidden md:inline">ย่อหน้าต่าง</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Maximize2 className="size-3.5" />
+                                        <span className="hidden md:inline">เต็มจอ</span>
+                                    </>
                                 )}
-                                title="แสดงแบบแถวเดี่ยว 1 คอลัมน์"
-                            >
-                                <FileText className="size-3.5" />
-                                <span>1 คอลัมน์</span>
-                            </button>
+                            </Button>
                         </div>
                     </div>
 
                     {/* ฟอร์มกรอกข้อมูล (Scrollable Body) */}
                     <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
-                        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 max-h-[calc(90vh-130px)]">
+                        <div
+                            className={cn(
+                                "flex-1 overflow-y-auto p-4 sm:p-6 space-y-4",
+                                isModalFullscreen
+                                    ? "max-h-[calc(100vh-130px)] max-w-6xl w-full mx-auto"
+                                    : "max-h-[calc(90vh-130px)]"
+                            )}
+                        >
+                            {/* AI Thinking Trace (shadcn/ui Trace) ใน Modal ขณะที่ AI กำลังคิด */}
+                            {isAiThinking && (
+                                <div className="rounded-xl border bg-card p-4 shadow-2xs font-[k-regular]">
+                                    <Trace className="font-[k-regular]">
+                                        <TraceCollapsible defaultOpen>
+                                            <TraceCollapsibleTrigger className="font-[k-medium]">
+                                                <TraceLine status="running" className="font-[k-medium]">
+                                                    <TraceIcon>
+                                                        <Spinner />
+                                                    </TraceIcon>
+                                                    <TraceTitle className="font-[k-medium]">
+                                                        {aiThinkingMessage || "Thinking..."}
+                                                    </TraceTitle>
+                                                    {aiThinkingModel && (
+                                                        <TraceDescription className="font-[k-light]">{aiThinkingModel}</TraceDescription>
+                                                    )}
+                                                </TraceLine>
+                                            </TraceCollapsibleTrigger>
+                                            <TraceCollapsibleContent className="font-[k-regular]">
+                                                <Trace className="font-[k-regular]">
+                                                    <TraceLine status={aiThinkingStep === "received" ? "running" : undefined} className="font-[k-regular]">
+                                                        <TraceIcon>
+                                                            {aiThinkingStep === "received" ? (
+                                                                <Spinner />
+                                                            ) : (
+                                                                <Check className="text-emerald-500" />
+                                                            )}
+                                                        </TraceIcon>
+                                                        <TraceTitle className="font-[k-regular]">Receieved image from phone</TraceTitle>
+                                                    </TraceLine>
 
-                            {/* ส่วนที่ 1: ข้อมูลบรรณานุกรมทั่วไป */}
+                                                    <TraceLine
+                                                        status={
+                                                            aiThinkingStep === "analyzing"
+                                                                ? "running"
+                                                                : aiThinkingStep === "extracting"
+                                                                    ? undefined
+                                                                    : "pending"
+                                                        }
+                                                        className="font-[k-regular]"
+                                                    >
+                                                        <TraceIcon>
+                                                            {aiThinkingStep === "analyzing" ? (
+                                                                <Spinner />
+                                                            ) : aiThinkingStep === "extracting" ? (
+                                                                <Check className="text-emerald-500" />
+                                                            ) : (
+                                                                <Clock />
+                                                            )}
+                                                        </TraceIcon>
+                                                        <TraceTitle className="font-[k-regular]">Analyze image</TraceTitle>
+                                                        {aiThinkingModel && (
+                                                            <TraceDescription className="font-[k-light]">{aiThinkingModel}</TraceDescription>
+                                                        )}
+                                                    </TraceLine>
+
+                                                    <TraceLine
+                                                        status={aiThinkingStep === "extracting" ? "running" : "pending"}
+                                                        className="font-[k-regular]"
+                                                    >
+                                                        <TraceIcon>
+                                                            {aiThinkingStep === "extracting" ? (
+                                                                <Spinner />
+                                                            ) : (
+                                                                <Clock />
+                                                            )}
+                                                        </TraceIcon>
+                                                        <TraceTitle className="font-[k-regular]">Extracting</TraceTitle>
+                                                    </TraceLine>
+                                                </Trace>
+                                            </TraceCollapsibleContent>
+                                        </TraceCollapsible>
+                                    </Trace>
+                                </div>
+                            )}
+
+                            {/* ส่วนที่ 1: ข้อมูลบรรณานุกรมทั่วไป (พับซ่อน/เปิดแสดงผลได้ และจำค่าใน localStorage) */}
                             <div className="rounded-xl border bg-card p-4 sm:p-5 space-y-4 shadow-2xs">
-                                <div className="flex items-center justify-between border-b pb-3">
-                                    <div className="flex items-center gap-2">
+                                <div
+                                    onClick={handleToggleGeneralInfo}
+                                    className={cn(
+                                        "flex flex-wrap items-center justify-between gap-2 cursor-pointer select-none",
+                                        isGeneralInfoOpen ? "border-b pb-3" : ""
+                                    )}
+                                >
+                                    <div className="flex flex-wrap items-center gap-2">
                                         <div className="p-1 rounded-md bg-primary/10 text-primary">
                                             <Layers className="size-4" />
                                         </div>
                                         <h4 className="font-[k-medium] text-base text-foreground">
                                             ข้อมูลบรรณานุกรมทั่วไป
                                         </h4>
+                                        {!isGeneralInfoOpen && (
+                                            <div className="flex flex-wrap items-center gap-1.5 text-xs font-[k-regular] text-muted-foreground ml-1">
+                                                <Badge variant="secondary" className="font-[k-regular] text-[11px]">
+                                                    {(materials.length > 0 ? materials : DEFAULT_MATERIALS).find(
+                                                        (t) => String(t.code) === String(formData.resourceType)
+                                                    )?.description || "ยังไม่เลือกประเภท"}
+                                                </Badge>
+                                                <Badge variant="secondary" className="font-[k-regular] text-[11px]">
+                                                    {(collections.length > 0 ? collections : DEFAULT_COLLECTIONS).find(
+                                                        (c) => String(c.code) === String(formData.location)
+                                                    )?.description || "ยังไม่เลือกสถานที่"}
+                                                </Badge>
+                                            </div>
+                                        )}
                                     </div>
+
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={(e) => {
+                                            e.stopPropagation()
+                                            handleToggleGeneralInfo()
+                                        }}
+                                        className="h-7 px-2.5 text-xs font-[k-medium] text-muted-foreground hover:text-foreground cursor-pointer flex items-center gap-1"
+                                    >
+                                        <span>{isGeneralInfoOpen ? "ซ่อน" : "แสดง"}</span>
+                                        <ChevronDown
+                                            className={cn(
+                                                "size-4 transition-transform duration-200",
+                                                isGeneralInfoOpen ? "rotate-180" : "rotate-0"
+                                            )}
+                                        />
+                                    </Button>
                                 </div>
 
+                                {isGeneralInfoOpen && (
                                 <div className={cn(
                                     "gap-y-3.5",
                                     formLayout === "grid"
@@ -1469,11 +2108,12 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                         </div>
                                     </div>
                                 </div>
+                                )}
                             </div>
 
                             {/* ส่วนที่ 2: ส่วนการลงรายการ MARC 21 (เรียงตาม Tag) */}
                             <div className="rounded-xl border bg-card p-4 sm:p-5 space-y-4 shadow-2xs">
-                                <div className="flex items-center justify-between border-b pb-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
                                     <div className="flex items-center gap-2">
                                         <div className="p-1 rounded-md bg-primary/10 text-primary">
                                             <Tag className="size-4" />
@@ -1485,9 +2125,24 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             Tag 020 - 700
                                         </Badge>
                                     </div>
-                                    <span className="text-xs font-[k-light] text-muted-foreground hidden sm:inline">
-                                        ช่องที่มี <span className="text-destructive font-bold">*</span> จำเป็นต้องกรอก
-                                    </span>
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-xs font-[k-light] text-muted-foreground hidden sm:inline">
+                                            ช่องที่มี <span className="text-destructive font-bold">*</span> จำเป็นต้องกรอก
+                                        </span>
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => {
+                                                setNewTagInput("")
+                                                setIsAddTagDialogOpen(true)
+                                            }}
+                                            className="h-8 px-2.5 text-xs font-[k-medium] cursor-pointer border-primary/30 text-primary hover:bg-primary/10 flex items-center gap-1.5"
+                                        >
+                                            <PlusCircle className="size-3.5" />
+                                            <span>เพิ่ม Tag ใหม่</span>
+                                        </Button>
+                                    </div>
                                 </div>
                                 <div className={cn(
                                     "gap-y-3.5",
@@ -1832,6 +2487,65 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                             />
                                         </div>
                                     </div>
+
+                                    {/* รายการ Tag ที่ผู้ใช้กดเพิ่มเข้ามาเอง */}
+                                    {customTags.map((ct) => {
+                                        const tagLabel = MARC_TAG_LABELS[ct.tag] || `Tag ${ct.tag}`
+                                        return (
+                                            <div key={ct.id} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                                                <Label
+                                                    htmlFor={ct.id}
+                                                    className={cn(
+                                                        "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1.5 cursor-pointer select-none",
+                                                        formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
+                                                    )}
+                                                >
+                                                    <span className="font-mono text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/25 shrink-0">
+                                                        {ct.tag}
+                                                    </span>
+                                                    <span className="truncate" title={tagLabel}>
+                                                        {tagLabel}
+                                                    </span>
+                                                </Label>
+                                                <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                                    <Input
+                                                        id={ct.id}
+                                                        value={ct.value}
+                                                        onChange={(e) => handleCustomTagValueChange(ct.id, e.target.value)}
+                                                        className="font-[k-medium] text-sm w-full h-9 bg-background/50 focus:bg-background text-blue-600 dark:text-blue-400 placeholder:text-muted-foreground/60 placeholder:font-[k-light] focus-visible:border-blue-500 focus-visible:ring-blue-500/20 transition-colors"
+                                                        placeholder={`กรอกข้อมูลสำหรับ Tag ${ct.tag}...`}
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        onClick={() => handleRemoveCustomTag(ct.id)}
+                                                        className="h-9 w-9 p-0 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                                                        title={`ลบช่อง Tag ${ct.tag}`}
+                                                    >
+                                                        <Trash2 className="size-4" />
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+
+                                {/* ปุ่มกดเพื่อเพิ่ม Tag ใหม่ที่ด้านล่างของส่วน MARC 21 */}
+                                <div className="pt-2 border-t border-dashed flex justify-center sm:justify-start">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            setNewTagInput("")
+                                            setIsAddTagDialogOpen(true)
+                                        }}
+                                        className="font-[k-medium] text-xs cursor-pointer border-dashed border-primary/40 text-primary hover:bg-primary/5 flex items-center gap-1.5"
+                                    >
+                                        <PlusCircle className="size-3.5" />
+                                        <span>+ เพิ่ม Tag ใหม่เอง</span>
+                                    </Button>
                                 </div>
                             </div>
                         </div>
@@ -1843,7 +2557,10 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                     type="button"
                                     variant="ghost"
                                     size="sm"
-                                    onClick={() => setFormData(getInitialFormData())}
+                                    onClick={() => {
+                                        setFormData(getInitialFormData())
+                                        setCustomTags([])
+                                    }}
                                     disabled={isSubmitting}
                                     className="cursor-pointer font-[k-regular] text-xs text-muted-foreground hover:text-foreground"
                                 >
@@ -1880,6 +2597,69 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                 </div>
                             </div>
                         </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal ย่อยสำหรับถามผู้ใช้ว่าต้องการเพิ่ม Tag อะไร */}
+            <Dialog open={isAddTagDialogOpen} onOpenChange={setIsAddTagDialogOpen}>
+                <DialogContent className="sm:max-w-sm rounded-2xl border shadow-2xl p-6">
+                    <form onSubmit={handleConfirmAddTag} className="space-y-4">
+                        <DialogHeader className="space-y-1.5">
+                            <div className="flex items-center gap-2.5">
+                                <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                    <Tag className="size-4" />
+                                </div>
+                                <DialogTitle className="font-[k-medium] text-base text-foreground">
+                                    เพิ่ม Tag ใหม่ (MARC 21)
+                                </DialogTitle>
+                            </div>
+                            <DialogDescription className="font-[k-light] text-xs text-muted-foreground">
+                                กรุณาระบุหมายเลข MARC Tag ที่ต้องการเพิ่ม ระบบจะสร้างช่องกรอกข้อมูลและบันทึกลงในตาราง <span className="font-mono text-foreground">biblio_field</span>
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="new-marc-tag-input" className="font-[k-medium] text-sm text-foreground">
+                                คือ Tag อะไร?
+                            </Label>
+                            <Input
+                                id="new-marc-tag-input"
+                                value={newTagInput}
+                                onChange={(e) => setNewTagInput(e.target.value)}
+                                placeholder="เช่น 050, 490, 500, 520"
+                                className="font-mono text-sm h-10"
+                                autoFocus
+                            />
+                            {newTagInput.trim().replace(/\D/g, "") && (
+                                <p className="text-xs font-[k-regular] text-muted-foreground">
+                                    ตัวอย่างป้ายกำกับ:{" "}
+                                    <span className="font-mono font-semibold text-primary">
+                                        {newTagInput.trim().replace(/\D/g, "").padStart(3, "0")}
+                                    </span>{" "}
+                                    ({MARC_TAG_LABELS[newTagInput.trim().replace(/\D/g, "").padStart(3, "0")] || `Tag ${newTagInput.trim().replace(/\D/g, "").padStart(3, "0")}`})
+                                </p>
+                            )}
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setIsAddTagDialogOpen(false)}
+                                className="font-[k-regular] cursor-pointer"
+                            >
+                                ยกเลิก
+                            </Button>
+                            <Button
+                                type="submit"
+                                size="sm"
+                                className="font-[k-medium] cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
+                            >
+                                ตกลง
+                            </Button>
+                        </div>
                     </form>
                 </DialogContent>
             </Dialog>
@@ -2157,6 +2937,90 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                 </AnimatePresence>
                             </div>
                         </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Floating AI Thinking Trace (shadcn/ui Trace) เมื่อ AI กำลังคิดแต่ยังไม่ได้เปิด Modal */}
+            <AnimatePresence>
+                {isAiThinking && !isModalOpen && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 20, scale: 0.96 }}
+                        transition={{ duration: 0.2 }}
+                        className="fixed bottom-5 right-5 z-50 w-full max-w-sm rounded-xl border bg-popover text-popover-foreground p-4 shadow-xl font-[k-regular]"
+                    >
+                        <Trace className="font-[k-regular]">
+                            <TraceCollapsible defaultOpen>
+                                <TraceCollapsibleTrigger className="font-[k-medium]">
+                                    <TraceLine status="running" className="font-[k-medium]">
+                                        <TraceIcon>
+                                            <Spinner />
+                                        </TraceIcon>
+                                        <TraceTitle className="font-[k-medium]">
+                                            {aiThinkingMessage || "Thinking..."}
+                                        </TraceTitle>
+                                        {aiThinkingModel && (
+                                            <TraceDescription className="font-[k-light]">{aiThinkingModel}</TraceDescription>
+                                        )}
+                                    </TraceLine>
+                                </TraceCollapsibleTrigger>
+                                <TraceCollapsibleContent className="font-[k-regular]">
+                                    <Trace className="font-[k-regular]">
+                                        <TraceLine status={aiThinkingStep === "received" ? "running" : undefined} className="font-[k-regular]">
+                                            <TraceIcon>
+                                                {aiThinkingStep === "received" ? (
+                                                    <Spinner />
+                                                ) : (
+                                                    <Check className="text-emerald-500" />
+                                                )}
+                                            </TraceIcon>
+                                            <TraceTitle className="font-[k-regular]">Receieved image from phone</TraceTitle>
+                                        </TraceLine>
+
+                                        <TraceLine
+                                            status={
+                                                aiThinkingStep === "analyzing"
+                                                    ? "running"
+                                                    : aiThinkingStep === "extracting"
+                                                        ? undefined
+                                                        : "pending"
+                                            }
+                                            className="font-[k-regular]"
+                                        >
+                                            <TraceIcon>
+                                                {aiThinkingStep === "analyzing" ? (
+                                                    <Spinner />
+                                                ) : aiThinkingStep === "extracting" ? (
+                                                    <Check className="text-emerald-500" />
+                                                ) : (
+                                                    <Clock />
+                                                )}
+                                            </TraceIcon>
+                                            <TraceTitle className="font-[k-regular]">Analyze image</TraceTitle>
+                                            {aiThinkingModel && (
+                                                <TraceDescription className="font-[k-light]">{aiThinkingModel}</TraceDescription>
+                                            )}
+                                        </TraceLine>
+
+                                        <TraceLine
+                                            status={aiThinkingStep === "extracting" ? "running" : "pending"}
+                                            className="font-[k-regular]"
+                                        >
+                                            <TraceIcon>
+                                                {aiThinkingStep === "extracting" ? (
+                                                    <Spinner />
+                                                ) : (
+                                                    <Clock />
+                                                )}
+                                            </TraceIcon>
+                                            <TraceTitle className="font-[k-regular]">Extracting</TraceTitle>
+                                        </TraceLine>
+                                    </Trace>
+                                </TraceCollapsibleContent>
+                            </TraceCollapsible>
+                        </Trace>
                     </motion.div>
                 )}
             </AnimatePresence>

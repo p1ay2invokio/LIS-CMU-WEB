@@ -20,8 +20,16 @@ export class PlayBook {
         return data.data
     }
 
-    public getBooks = async () => {
-        let data = await axios.get(`${endpoint}/books`)
+    public getBooks = async (params?: {
+        page?: number
+        limit?: number
+        status?: string
+        search?: string
+        searchField?: string
+    }) => {
+        let data = await axios.get(`${endpoint}/books`, {
+            params,
+        })
 
         return data.data
     }
@@ -34,12 +42,15 @@ export class PlayBook {
         return data.data
     }
 
-    public uploadImageToAI = async (file: File, sessionId: string) => {
+    public uploadImageToAI = async (file: File, sessionId: string, model?: string) => {
 
         let formData = new FormData()
 
         formData.append("image", file)
         formData.append("sessionId", sessionId)
+        if (model) {
+            formData.append("model", model)
+        }
 
         let data = await axios.post(`${endpoint}/askai`, formData)
 

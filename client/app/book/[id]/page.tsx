@@ -946,6 +946,48 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
                                                     </p>
                                                 </div>
                                             )}
+
+                                            {/* เขตข้อมูล MARC 21 เพิ่มเติมจาก biblio_field */}
+                                            {(() => {
+                                                const standardTags = new Set([20, 82, 100, 245, 250, 260, 300, 520, 650, 700])
+                                                const extraFields = (book.fields || []).filter(
+                                                    (f) => !standardTags.has(Number(f.tag)) && f.field_data
+                                                )
+                                                if (extraFields.length === 0) return null
+                                                return (
+                                                    <div className="rounded-xl border bg-card p-5 shadow-2xs space-y-4">
+                                                        <div className="flex items-center gap-2 border-b pb-3">
+                                                            <Hash className="size-4 text-primary" />
+                                                            <h3 className="font-[k-medium] text-base text-foreground">
+                                                                เขตข้อมูล MARC 21 เพิ่มเติม
+                                                            </h3>
+                                                            <Badge variant="secondary" className="font-mono text-[11px] ml-auto">
+                                                                {extraFields.length} รายการ
+                                                            </Badge>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                                            {extraFields.map((ef) => (
+                                                                <div
+                                                                    key={`${ef.fieldid}-${ef.tag}`}
+                                                                    className="flex items-start gap-2.5 p-3 rounded-lg bg-muted/30 border"
+                                                                >
+                                                                    <span className="font-mono text-xs font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded border border-primary/20 shrink-0 mt-0.5">
+                                                                        {String(ef.tag).padStart(3, "0")}
+                                                                    </span>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <span className="text-xs text-muted-foreground font-[k-light] block truncate">
+                                                                            {ef.tagName}
+                                                                        </span>
+                                                                        <span className="font-[k-medium] text-foreground break-words">
+                                                                            {ef.field_data}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })()}
                                         </div>
                                     )}
 

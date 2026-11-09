@@ -33,7 +33,41 @@ import {
     Calendar,
     Layers,
     Save,
+    PlusCircle,
+    Trash2,
+    Hash,
 } from "lucide-react"
+
+// ชื่อคำอธิบายของ MARC 21 Tags ที่พบบ่อย
+const MARC_TAG_LABELS: Record<string, string> = {
+    "010": "หมายเลขควบคุม LC",
+    "020": "ISBN",
+    "022": "ISSN",
+    "041": "รหัสภาษา",
+    "050": "เลขเรียกหนังสือ LC",
+    "082": "เลขหมู่ดิวอี้ (DDC)",
+    "100": "ชื่อผู้แต่งหลัก",
+    "110": "ผู้แต่งนิติบุคคล",
+    "245": "ชื่อเรื่อง",
+    "246": "ชื่อเรื่องอื่นๆ",
+    "250": "ครั้งที่พิมพ์",
+    "260": "ข้อมูลการพิมพ์",
+    "264": "การผลิต/เผยแพร่",
+    "300": "ลักษณะกายภาพ",
+    "440": "ชื่อชุด",
+    "490": "แถลงชุด (Series)",
+    "500": "หมายเหตุทั่วไป",
+    "504": "หมายเหตุบรรณานุกรม",
+    "505": "หมายเหตุสารบัญ",
+    "520": "สาระสังเขป / เรื่องย่อ",
+    "600": "หัวเรื่องบุคคล",
+    "650": "หัวเรื่อง",
+    "651": "หัวเรื่องภูมิศาสตร์",
+    "700": "ผู้แต่งร่วม",
+    "710": "นิติบุคคลร่วม",
+    "856": "ที่อยู่สื่ออิเล็กทรอนิกส์ (URL)",
+    "902": "ภาพปก",
+}
 
 interface EditBookDialogProps {
     open: boolean
@@ -72,8 +106,55 @@ export function EditBookDialog({
         physicalExtent: "",
         subject1: "",
         subject2: "",
+        coAuthor1: "",
+        coAuthor2: "",
         status: "รอตรวจสอบ",
     })
+
+    // State สำหรับเขตข้อมูล MARC 21 เพิ่มเติม (Custom Tags)
+    const [customTags, setCustomTags] = useState<Array<{ id: string; tag: string; subfield_cd?: string; value: string; tagName?: string }>>([])
+    const [isAddTagDialogOpen, setIsAddTagDialogOpen] = useState(false)
+    const [newTagInput, setNewTagInput] = useState("")
+
+    const handleConfirmAddTag = (e?: React.FormEvent) => {
+        if (e) e.preventDefault()
+        const raw = newTagInput.trim()
+        const digitsOnly = raw.replace(/\D/g, "")
+        if (!digitsOnly) {
+            toast.error("กรุณาระบุหมายเลข Tag เป็นตัวเลข (เช่น 050, 490, 500, 520)")
+            return
+        }
+        const tagNum = parseInt(digitsOnly, 10)
+        if (isNaN(tagNum) || tagNum <= 0 || tagNum > 999) {
+            toast.error("หมายเลข MARC Tag ต้องอยู่ระหว่าง 001 - 999")
+            return
+        }
+        const formattedTag = String(tagNum).padStart(3, "0")
+        const newId = `edit-custom-tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        setCustomTags((prev) => [
+            ...prev,
+            {
+                id: newId,
+                tag: formattedTag,
+                subfield_cd: "a",
+                value: "",
+                tagName: MARC_TAG_LABELS[formattedTag] || `Tag ${formattedTag}`,
+            },
+        ])
+        setNewTagInput("")
+        setIsAddTagDialogOpen(false)
+        toast.success(`เพิ่มช่องกรอกสำหรับ Tag ${formattedTag} เรียบร้อยแล้ว`)
+    }
+
+    const handleCustomTagValueChange = (id: string, value: string) => {
+        setCustomTags((prev) =>
+            prev.map((item) => (item.id === id ? { ...item, value } : item))
+        )
+    }
+
+    const handleRemoveCustomTag = (id: string) => {
+        setCustomTags((prev) => prev.filter((item) => item.id !== id))
+    }
 
     // โหลดข้อมูลหนังสือเมื่อเปิด Dialog
     useEffect(() => {
@@ -125,19 +206,38 @@ export function EditBookDialog({
                         title: data.title || "",
                         author: data.author || "",
                         deweyCallNumber: [data.call_nmbr1, data.call_nmbr2, data.call_nmbr3].filter(Boolean).join(" ") || marc.deweyCallNumber || marc.callNumber || "",
-                        lcCallItem: data.call_nmbr2 || marc.lcCall || "",
-                        publicationYear: data.call_nmbr3 || marc.year || "",
+                        lcCallItem: marc.lcCallNumber || marc.lcCall || "",
+                        publicationYear: marc.publicationYear || data.call_nmbr3 || marc.year || "",
                         resourceType: String(data.material_cd || "2"),
                         location: String(data.collection_cd || "2"),
                         isbn: marc.isbn || data.isbn || "",
                         edition: marc.edition || "",
                         publisher: marc.publisher || "",
-                        publicationPlace: marc.place || "",
+                        publicationPlace: marc.publicationPlace || marc.place || "",
                         physicalExtent: initialPhysicalDesc,
                         subject1: data.topic1 || (marc.subjects && marc.subjects[0]) || "",
                         subject2: data.topic2 || (marc.subjects && marc.subjects[1]) || "",
+                        coAuthor1: (marc.coAuthors && marc.coAuthors[0]) || "",
+                        coAuthor2: (marc.coAuthors && marc.coAuthors[1]) || "",
                         status: data.status || "รอตรวจสอบ",
                     })
+
+                    // ดึงเขตข้อมูล MARC 21 เพิ่มเติมจากตาราง biblio_field ที่นอกเหนือจากช่องมาตรฐาน
+                    const standardFieldTags = new Set([20, 50, 82, 100, 245, 250, 260, 300, 650, 700])
+                    const rawFields = Array.isArray(data.fields) ? data.fields : []
+                    const loadedCustomTags = rawFields
+                        .filter((f: any) => !standardFieldTags.has(Number(f.tag)))
+                        .map((f: any, idx: number) => {
+                            const formattedTag = String(f.tag).padStart(3, "0")
+                            return {
+                                id: `existing-field-${f.fieldid || idx}-${f.tag}`,
+                                tag: formattedTag,
+                                subfield_cd: f.subfield_cd || "a",
+                                value: f.field_data || "",
+                                tagName: f.tagName || MARC_TAG_LABELS[formattedTag] || `Tag ${formattedTag}`,
+                            }
+                        })
+                    setCustomTags(loadedCustomTags)
                 }
             } catch (err: any) {
                 console.error("Failed to load book for editing:", err)
@@ -181,6 +281,13 @@ export function EditBookDialog({
                 call_nmbr1: deweyParts[0] || "",
                 call_nmbr2: deweyParts[1] || "",
                 call_nmbr3: deweyParts.length > 2 ? deweyParts.slice(2).join(" ") : "",
+                customTags: customTags
+                    .filter((t) => t.tag && t.value.trim() !== "")
+                    .map((t) => ({
+                        tag: t.tag,
+                        subfield_cd: t.subfield_cd || "a",
+                        value: t.value.trim(),
+                    })),
             }
             const res = await playbook.updateBook(bibid, payload)
 
@@ -454,6 +561,106 @@ export function EditBookDialog({
                             </div>
                         </div>
 
+                        {/* ผู้แต่งร่วม (Co-Authors - Tag 700) */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <Label htmlFor="edit-coauthor1" className="font-[k-medium] text-xs text-foreground flex items-center gap-1">
+                                    <span>ผู้แต่งร่วม 1 (700)</span>
+                                </Label>
+                                <Input
+                                    id="edit-coauthor1"
+                                    value={form.coAuthor1}
+                                    onChange={(e) => handleChange("coAuthor1", e.target.value)}
+                                    placeholder="ชื่อ-นามสกุล..."
+                                    className="font-[k-regular] text-xs h-9"
+                                />
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label htmlFor="edit-coauthor2" className="font-[k-medium] text-xs text-foreground flex items-center gap-1">
+                                    <span>ผู้แต่งร่วม 2 (700)</span>
+                                </Label>
+                                <Input
+                                    id="edit-coauthor2"
+                                    value={form.coAuthor2}
+                                    onChange={(e) => handleChange("coAuthor2", e.target.value)}
+                                    placeholder="ชื่อ-นามสกุล..."
+                                    className="font-[k-regular] text-xs h-9"
+                                />
+                            </div>
+                        </div>
+
+                        {/* เขตข้อมูล MARC 21 เพิ่มเติม (Custom Tags ใน biblio_field) */}
+                        <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+                            <div className="flex items-center justify-between border-b pb-2.5">
+                                <div className="flex items-center gap-2">
+                                    <Hash className="size-4 text-primary" />
+                                    <span className="font-[k-medium] text-xs sm:text-sm text-foreground">
+                                        เขตข้อมูล MARC 21 เพิ่มเติม ({customTags.length} รายการ)
+                                    </span>
+                                </div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                        setNewTagInput("")
+                                        setIsAddTagDialogOpen(true)
+                                    }}
+                                    className="h-7 px-2.5 text-xs font-[k-medium] cursor-pointer border-primary/30 text-primary hover:bg-primary/10 flex items-center gap-1"
+                                >
+                                    <PlusCircle className="size-3.5" />
+                                    <span>เพิ่ม Tag ใหม่</span>
+                                </Button>
+                            </div>
+
+                            {customTags.length === 0 ? (
+                                <p className="font-[k-light] text-xs text-muted-foreground text-center py-2">
+                                    ยังไม่มีเขตข้อมูล MARC 21 เพิ่มเติม กดปุ่ม &quot;เพิ่ม Tag ใหม่&quot; ด้านบนเพื่อเพิ่มข้อมูลได้
+                                </p>
+                            ) : (
+                                <div className="grid grid-cols-1 gap-2.5">
+                                    {customTags.map((ct) => {
+                                        const label = MARC_TAG_LABELS[ct.tag] || ct.tagName || `Tag ${ct.tag}`
+                                        return (
+                                            <div key={ct.id} className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2.5 bg-background/80 p-2.5 rounded-lg border">
+                                                <Label
+                                                    htmlFor={ct.id}
+                                                    className="shrink-0 sm:w-44 font-[k-medium] text-xs text-foreground/90 flex items-center gap-1.5 cursor-pointer"
+                                                >
+                                                    <span className="font-mono text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/25 shrink-0">
+                                                        {ct.tag}
+                                                    </span>
+                                                    <span className="truncate" title={label}>
+                                                        {label}
+                                                    </span>
+                                                </Label>
+                                                <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                                    <Input
+                                                        id={ct.id}
+                                                        value={ct.value}
+                                                        onChange={(e) => handleCustomTagValueChange(ct.id, e.target.value)}
+                                                        placeholder={`กรอกข้อมูลสำหรับ Tag ${ct.tag}...`}
+                                                        className="font-[k-regular] text-xs h-8 flex-1"
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        onClick={() => handleRemoveCustomTag(ct.id)}
+                                                        className="h-8 w-8 p-0 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                                                        title={`ลบ Tag ${ct.tag}`}
+                                                    >
+                                                        <Trash2 className="size-3.5" />
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+
                         <DialogFooter className="pt-3 border-t flex items-center justify-end gap-2">
                             <Button
                                 type="button"
@@ -485,6 +692,69 @@ export function EditBookDialog({
                     </form>
                 )}
             </DialogContent>
+
+            {/* Modal ย่อยสำหรับถามผู้ใช้ว่าต้องการเพิ่ม Tag อะไรในหน้าแก้ไข */}
+            <Dialog open={isAddTagDialogOpen} onOpenChange={setIsAddTagDialogOpen}>
+                <DialogContent className="sm:max-w-sm rounded-2xl border shadow-2xl p-6">
+                    <form onSubmit={handleConfirmAddTag} className="space-y-4">
+                        <DialogHeader className="space-y-1.5">
+                            <div className="flex items-center gap-2.5">
+                                <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                    <Tag className="size-4" />
+                                </div>
+                                <DialogTitle className="font-[k-medium] text-base text-foreground">
+                                    เพิ่ม Tag ใหม่ (MARC 21)
+                                </DialogTitle>
+                            </div>
+                            <DialogDescription className="font-[k-light] text-xs text-muted-foreground">
+                                กรุณาระบุหมายเลข MARC Tag ที่ต้องการเพิ่มในหน้าแก้ไขหนังสือ
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="edit-new-marc-tag-input" className="font-[k-medium] text-sm text-foreground">
+                                คือ Tag อะไร?
+                            </Label>
+                            <Input
+                                id="edit-new-marc-tag-input"
+                                value={newTagInput}
+                                onChange={(e) => setNewTagInput(e.target.value)}
+                                placeholder="เช่น 050, 490, 500, 520"
+                                className="font-mono text-sm h-10"
+                                autoFocus
+                            />
+                            {newTagInput.trim().replace(/\D/g, "") && (
+                                <p className="text-xs font-[k-regular] text-muted-foreground">
+                                    ตัวอย่างป้ายกำกับ:{" "}
+                                    <span className="font-mono font-semibold text-primary">
+                                        {newTagInput.trim().replace(/\D/g, "").padStart(3, "0")}
+                                    </span>{" "}
+                                    ({MARC_TAG_LABELS[newTagInput.trim().replace(/\D/g, "").padStart(3, "0")] || `Tag ${newTagInput.trim().replace(/\D/g, "").padStart(3, "0")}`})
+                                </p>
+                            )}
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setIsAddTagDialogOpen(false)}
+                                className="font-[k-regular] cursor-pointer"
+                            >
+                                ยกเลิก
+                            </Button>
+                            <Button
+                                type="submit"
+                                size="sm"
+                                className="font-[k-medium] cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
+                            >
+                                ตกลง
+                            </Button>
+                        </div>
+                    </form>
+                </DialogContent>
+            </Dialog>
         </Dialog>
     )
 }
