@@ -26,7 +26,7 @@ export default function LoginPage() {
         <div className="translate-x-[-30%]">
           <Lanyard
             frontImage='/cmu.png'
-            backImage='/cmulogo.png'
+            backImage='/morchorlogo.png'
             // lanyardImage={'/cmulogo.png'}
             position={[0, 0, 20]}
             gravity={[0, -20, 0]}

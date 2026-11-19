@@ -141,7 +141,10 @@ function Band({
     const ctx = canvas.getContext('2d');
     if (!ctx) return baseMap;
     // Keep the original baked atlas for the card edges and any untouched face.
-    ctx.drawImage(baseImg, 0, 0, W, H);
+    // ctx.drawImage(baseImg, 0, 0, W, H);
+
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, W, H);
 
     const drawFitted = (img, rect) => {
       const rx = rect.x * W;
@@ -149,7 +152,7 @@ function Band({
       const rw = rect.w * W;
       const rh = rect.h * H;
       const pick = imageFit === 'contain' ? Math.min : Math.max;
-      const scale = pick(rw / img.width, rh / img.height);
+      const scale = pick(rw / img.width, rh / img.height) * 0.8;
       const dw = img.width * scale;
       const dh = img.height * scale;
       const dx = rx + (rw - dw) / 2;
