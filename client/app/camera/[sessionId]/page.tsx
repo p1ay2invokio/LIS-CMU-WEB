@@ -48,9 +48,12 @@ import {
     X,
     Loader2,
     Clock,
+    Barcode,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { PlayBook } from "@/class/playbook.class"
+import { Input } from "@/components/ui/input"
+import { detectBarcodeFromVideo } from "@/lib/barcode-scanner"
 
 const CameraPage = () => {
     const params = useParams()
@@ -76,6 +79,16 @@ const CameraPage = () => {
     // File State
     const fileInputRef = useRef<HTMLInputElement>(null)
     const nativeCameraInputRef = useRef<HTMLInputElement>(null)
+    const barcodePhotoInputRef = useRef<HTMLInputElement>(null)
+    const barcodeWebcamRef = useRef<Webcam>(null)
+
+    // Barcode Scanner State
+    const [barcodeTarget, setBarcodeTarget] = useState<string | null>(null)
+    const [barcodeLabel, setBarcodeLabel] = useState<string>("")
+    const [lastScannedBarcode, setLastScannedBarcode] = useState<string>("")
+    const [manualBarcodeInput, setManualBarcodeInput] = useState<string>("")
+    const [isScanningBarcodePhoto, setIsScanningBarcodePhoto] = useState<boolean>(false)
+    const lastBarcodeEmitRef = useRef<{ code: string; time: number }>({ code: "", time: 0 })
     const [fileImage, setFileImage] = useState<string | null>(null)
     const [fileInfo, setFileInfo] = useState<{
         name: string
@@ -108,9 +121,20 @@ const CameraPage = () => {
     // Mounting Check for SSR Safety & restore saved user preferences
     useEffect(() => {
         try {
-            const savedTab = localStorage.getItem(TAB_STORAGE_KEY)
-            if (savedTab === "camera" || savedTab === "file") {
-                setActiveTab(savedTab)
+            const paramsSearch = new URLSearchParams(window.location.search)
+            const urlMode = paramsSearch.get("mode")
+            const urlTarget = paramsSearch.get("target")
+            if (urlTarget) {
+                setBarcodeTarget(urlTarget)
+            }
+
+            if (urlMode === "barcode") {
+                setActiveTab("barcode")
+            } else {
+                const savedTab = localStorage.getItem(TAB_STORAGE_KEY)
+                if (savedTab === "camera" || savedTab === "file" || savedTab === "barcode") {
+                    setActiveTab(savedTab)
+                }
             }
             const savedFacing = localStorage.getItem(FACING_MODE_STORAGE_KEY)
             if (savedFacing === "environment" || savedFacing === "user") {
@@ -177,10 +201,26 @@ const CameraPage = () => {
             }
         }
 
+        const onBarcodeScanRequested = (payload: any) => {
+            setIsSuccess(false)
+            setActiveTab("barcode")
+            if (payload?.target) {
+                setBarcodeTarget(payload.target)
+            }
+            if (payload?.label) {
+                setBarcodeLabel(payload.label)
+            }
+            if (typeof navigator !== "undefined" && navigator.vibrate) {
+                navigator.vibrate(80)
+            }
+            toast.info("คอมพิวเตอร์เปิดรอรับเลขบาร์โค้ด — ส่องแถบบาร์โค้ดได้เลย!")
+        }
+
         socket.on("connect", onConnect)
         socket.on("phone-join-room:success", onJoinSuccess)
         socket.on("disconnect", onDisconnect)
         socket.on("ai:thinking", onAiThinking)
+        socket.on("barcode:scan-requested", onBarcodeScanRequested)
 
         if (!socket.connected) {
             socket.connect()
@@ -193,9 +233,93 @@ const CameraPage = () => {
             socket.off("phone-join-room:success", onJoinSuccess)
             socket.off("disconnect", onDisconnect)
             socket.off("ai:thinking", onAiThinking)
+            socket.off("barcode:scan-requested", onBarcodeScanRequested)
             socket.disconnect()
         }
     }, [sessionId])
+
+    // ส่งหมายเลขบาร์โค้ดที่อ่านได้ไปยังคอมพิวเตอร์ผ่าน Socket.io
+    const emitScannedBarcode = useCallback((rawCode: string, source: "phone-live" | "phone-manual" = "phone-live") => {
+        const cleaned = rawCode.trim().slice(0, 20)
+        if (!cleaned || !sessionId) return
+
+        const now = Date.now()
+        if (
+            source === "phone-live" &&
+            lastBarcodeEmitRef.current.code === cleaned &&
+            now - lastBarcodeEmitRef.current.time < 2500
+        ) {
+            return
+        }
+
+        lastBarcodeEmitRef.current = { code: cleaned, time: now }
+        setLastScannedBarcode(cleaned)
+        setManualBarcodeInput(cleaned)
+
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+            navigator.vibrate(70)
+        }
+
+        socket.emit("barcode-scanned", {
+            sessionId,
+            barcode: cleaned,
+            target: barcodeTarget,
+            source,
+        })
+
+        toast.success(`ส่งบาร์โค้ด "${cleaned}" ไปยังคอมพิวเตอร์แล้ว!`)
+    }, [sessionId, barcodeTarget])
+
+    // ลูปสแกนบาร์โค้ดอัตโนมัติขณะเปิดแท็บ "barcode"
+    useEffect(() => {
+        if (!isMounted || activeTab !== "barcode" || isSuccess) return
+
+        let active = true
+        const timer = setInterval(async () => {
+            if (!active) return
+            const video = barcodeWebcamRef.current?.video
+            if (!video) return
+            const detected = await detectBarcodeFromVideo(video)
+            if (detected && active) {
+                emitScannedBarcode(detected, "phone-live")
+            }
+        }, 160)
+
+        return () => {
+            active = false
+            clearInterval(timer)
+        }
+    }, [isMounted, activeTab, isSuccess, emitScannedBarcode])
+
+    // ถ่ายภาพสติกเกอร์บาร์โค้ดความละเอียดสูงให้ AI อ่าน (สำหรับ iPhone หรือบาร์โค้ดขนาดเล็ก)
+    const handleBarcodePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        if (barcodePhotoInputRef.current) {
+            barcodePhotoInputRef.current.value = ""
+        }
+
+        try {
+            setIsScanningBarcodePhoto(true)
+            const pb = new PlayBook()
+            const res = await pb.scanBarcodeImage(file, sessionId, barcodeTarget || undefined)
+            if (res?.barcode) {
+                const code = String(res.barcode).trim().slice(0, 20)
+                setLastScannedBarcode(code)
+                setManualBarcodeInput(code)
+                if (typeof navigator !== "undefined" && navigator.vibrate) {
+                    navigator.vibrate(80)
+                }
+                toast.success(`อ่านและส่งบาร์โค้ด "${code}" ไปยังคอมพิวเตอร์แล้ว!`)
+            } else {
+                toast.error("ไม่พบบาร์โค้ดในภาพ กรุณาถ่ายใหม่อีกครั้ง")
+            }
+        } catch (err: any) {
+            toast.error(err?.response?.data?.message || "ไม่สามารถอ่านบาร์โค้ดจากรูปภาพได้")
+        } finally {
+            setIsScanningBarcodePhoto(false)
+        }
+    }
 
     const [image_source, setImageSource] = useState<File | null>(null)
 
@@ -451,72 +575,6 @@ const CameraPage = () => {
 
             <div className="w-full max-w-md mx-auto space-y-4">
                 {/* Header & Session Bar */}
-                <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-slate-200 dark:border-zinc-800 p-4">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                            <div className="w-10 h-10 rounded-xl bg-purple-600/10 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400 flex items-center justify-center">
-                                <CameraIcon className="size-5" />
-                            </div>
-                            <div>
-                                <p className="font-[k-light] text-xs text-muted-foreground">
-                                    LIS CMU Book Catalog
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* Connection Status Badge */}
-                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-[k-medium] bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700">
-                            {isConnected ? (
-                                <>
-                                    <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-                                    <span className="text-emerald-600 dark:text-emerald-400">เชื่อมต่อแล้ว</span>
-                                </>
-                            ) : (
-                                <>
-                                    <span className="size-2 rounded-full bg-amber-500 animate-pulse" />
-                                    <span className="text-amber-600 dark:text-amber-400">กำลังเชื่อมต่อ</span>
-                                </>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Session ID display */}
-                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between text-xs text-muted-foreground font-[k-regular]">
-                        <span>รหัสเซสชัน (Session ID):</span>
-                        <span className="font-[k-medium] text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800">
-                            {sessionId || "ไม่ระบุ"}
-                        </span>
-                    </div>
-
-                    {/* AI Model Selector */}
-                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-3 text-xs font-[k-regular]">
-                        <span className="text-muted-foreground flex items-center gap-1.5 shrink-0">
-                            <span>เลือก AI Model</span>
-                        </span>
-                        <Select
-                            value={selectedModel}
-                            onValueChange={handleModelChange}
-                            disabled={isSending}
-                        >
-                            <SelectTrigger className="h-8 w-[210px] text-xs font-[k-medium] rounded-lg border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/70 cursor-pointer">
-                                <SelectValue placeholder="เลือกโมเดล AI">
-                                    {selectedModel}
-                                </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent className="font-[k-regular]">
-                                {AI_MODEL_OPTIONS.map((model) => (
-                                    <SelectItem
-                                        key={model.value}
-                                        value={model.value}
-                                        className="text-xs font-[k-regular] cursor-pointer"
-                                    >
-                                        {model.label}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                </div>
 
                 {/* AI Thinking Trace (shadcn/ui Trace) ขณะส่งรูปภาพให้ AI คิด */}
                 {isSending && (
@@ -677,20 +735,27 @@ const CameraPage = () => {
                                 className="w-full"
                             >
                                 {/* Tab Navigation */}
-                                <TabsList className="grid grid-cols-2 w-full h-11 p-1 bg-slate-100 dark:bg-zinc-800 rounded-xl mb-4">
+                                <TabsList className="grid grid-cols-3 w-full h-11 p-1 bg-slate-100 dark:bg-zinc-800 rounded-xl mb-4">
                                     <TabsTrigger
                                         value="camera"
-                                        className="rounded-lg text-sm font-[k-medium] flex items-center justify-center gap-2 data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:shadow-sm data-[state=active]:text-purple-600 dark:data-[state=active]:text-purple-400"
+                                        className="rounded-lg text-xs sm:text-sm font-[k-medium] flex items-center justify-center gap-1.5 data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:shadow-sm data-[state=active]:text-purple-600 dark:data-[state=active]:text-purple-400"
                                     >
-                                        <CameraIcon className="size-4" />
-                                        <span>แบบถ่ายรูป</span>
+                                        <CameraIcon className="size-4 shrink-0" />
+                                        <span className="truncate">ถ่ายรูป</span>
                                     </TabsTrigger>
                                     <TabsTrigger
                                         value="file"
-                                        className="rounded-lg text-sm font-[k-medium] flex items-center justify-center gap-2 data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:shadow-sm data-[state=active]:text-purple-600 dark:data-[state=active]:text-purple-400"
+                                        className="rounded-lg text-xs sm:text-sm font-[k-medium] flex items-center justify-center gap-1.5 data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:shadow-sm data-[state=active]:text-purple-600 dark:data-[state=active]:text-purple-400"
                                     >
-                                        <Upload className="size-4" />
-                                        <span>แบบไฟล์</span>
+                                        <Upload className="size-4 shrink-0" />
+                                        <span className="truncate">แบบไฟล์</span>
+                                    </TabsTrigger>
+                                    <TabsTrigger
+                                        value="barcode"
+                                        className="rounded-lg text-xs sm:text-sm font-[k-medium] flex items-center justify-center gap-1.5 data-[state=active]:bg-white dark:data-[state=active]:bg-zinc-900 data-[state=active]:shadow-sm data-[state=active]:text-blue-600 dark:data-[state=active]:text-blue-400"
+                                    >
+                                        <Barcode className="size-4 shrink-0" />
+                                        <span className="truncate">บาร์โค้ด</span>
                                     </TabsTrigger>
                                 </TabsList>
 
@@ -730,37 +795,6 @@ const CameraPage = () => {
                                                     <span>แตะเพื่อขยาย</span>
                                                 </div>
                                             </div>
-
-                                            {/* File Size & Resolution Card */}
-                                            {capturedInfo && (
-                                                <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 dark:bg-amber-950/20 dark:border-amber-800/40 rounded-xl space-y-2 text-xs">
-                                                    <div className="flex items-center justify-between">
-                                                        <span className="font-[k-medium] text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
-                                                            <Info className="size-4 text-amber-600 dark:text-amber-400" />
-                                                            ขนาดไฟล์ภาพ:
-                                                        </span>
-                                                        <span className="font-[k-bold] text-amber-950 dark:text-amber-100 text-sm">
-                                                            {capturedInfo.size}
-                                                        </span>
-                                                    </div>
-
-                                                    {capturedInfo.resolution && (
-                                                        <div className="flex items-center justify-between text-muted-foreground text-[11px]">
-                                                            <span>ความละเอียดภาพ (Resolution):</span>
-                                                            <span className="font-[k-medium] text-foreground">{capturedInfo.resolution}</span>
-                                                        </div>
-                                                    )}
-
-                                                    <div className="pt-2 border-t border-amber-500/20 text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed space-y-1">
-                                                        <p>
-                                                            💡 <strong>ทำไมภาพจากกล้องเว็บอาจไม่คมชัด?</strong> Safari บน iPhone จะจำกัดความละเอียดวิดีโอบนเว็บไว้ที่ ~720p/1080p (ประมาณ 0.2 - 0.5 MB) และไม่มี Macro Autofocus สำหรับตัวหนังสือเล็ก
-                                                        </p>
-                                                        <p className="text-purple-700 dark:text-purple-300 font-[k-medium]">
-                                                            👉 หากภาพเบลอ แนะนำให้กด <strong>&quot;ถ่ายใหม่&quot;</strong> แล้วเลือก <strong>&quot;ถ่ายด้วยกล้องมือถือ (Native Camera)&quot;</strong> เพื่อใช้เซนเซอร์ 12-48MP ของ iPhone เต็มความละเอียด
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            )}
 
                                             <div className="grid grid-cols-2 gap-3">
                                                 <Button
@@ -908,25 +942,6 @@ const CameraPage = () => {
                                                         </div>
                                                     </button>
                                                 </div>
-                                                <span className="text-xs font-[k-regular] text-muted-foreground">
-                                                    กดเพื่อถ่ายภาพจากจอ (Webcam)
-                                                </span>
-
-                                                {/* Native Camera High-Res Button */}
-                                                <div className="w-full pt-1 space-y-1.5">
-                                                    <Button
-                                                        type="button"
-                                                        variant="outline"
-                                                        onClick={() => nativeCameraInputRef.current?.click()}
-                                                        className="w-full rounded-xl h-12 border-purple-400 dark:border-purple-700 text-purple-700 dark:text-purple-300 bg-purple-50/80 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/70 font-[k-medium] gap-2 shadow-xs cursor-pointer text-sm"
-                                                    >
-                                                        <Sparkles className="size-4 text-purple-600 dark:text-purple-400 animate-pulse" />
-                                                        <span>ถ่ายด้วยกล้องมือถือ (แนะนำ: คมชัด 12-48MP)</span>
-                                                    </Button>
-                                                    <p className="text-[11px] text-center text-muted-foreground">
-                                                        * แนะนำสำหรับถ่ายหน้าปกใน/CIP เพราะกล้องไอโฟนจะโฟกัสตัวหนังสือเล็กได้คมชัดที่สุด
-                                                    </p>
-                                                </div>
                                             </div>
                                         </div>
                                     )}
@@ -969,44 +984,6 @@ const CameraPage = () => {
                                                 </div>
                                             </div>
 
-                                            {/* File Info */}
-                                            {fileInfo && (
-                                                <div className="p-3.5 bg-slate-50 dark:bg-zinc-800/60 rounded-xl border border-slate-200 dark:border-zinc-800 space-y-2 text-xs font-[k-regular]">
-                                                    <div className="flex items-center justify-between">
-                                                        <div className="truncate max-w-[200px]">
-                                                            <p className="font-[k-medium] text-foreground truncate">
-                                                                {fileInfo.name}
-                                                            </p>
-                                                            {fileInfo.resolution && (
-                                                                <p className="text-[11px] text-muted-foreground">
-                                                                    ความละเอียด: {fileInfo.resolution}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                        <div className="text-right">
-                                                            <span className="font-[k-bold] text-sm text-purple-600 dark:text-purple-400">
-                                                                {fileInfo.size}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="flex items-center justify-between pt-1 border-t border-slate-200/60 dark:border-zinc-700/60">
-                                                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-[k-medium]">
-                                                            <Check className="size-3" /> คมชัดระดับต้นฉบับ (Original Full Res)
-                                                        </span>
-                                                        <Button
-                                                            type="button"
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            onClick={clearFile}
-                                                            className="h-7 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 text-xs gap-1 font-[k-regular] px-2 cursor-pointer"
-                                                        >
-                                                            <Trash2 className="size-3" />
-                                                            ลบ
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            )}
 
                                             <div className="grid grid-cols-2 gap-3">
                                                 <Button
@@ -1043,14 +1020,6 @@ const CameraPage = () => {
                                     ) : (
                                         /* Native Camera & File Picker */
                                         <div className="space-y-3">
-                                            <Button
-                                                type="button"
-                                                onClick={() => nativeCameraInputRef.current?.click()}
-                                                className="w-full rounded-xl h-12 bg-purple-600 hover:bg-purple-700 text-white font-[k-medium] gap-2 shadow-sm cursor-pointer"
-                                            >
-                                                <CameraIcon className="size-5" />
-                                                <span>เปิดกล้องมือถือถ่ายภาพ (คมชัดสูงสุด 12-48MP)</span>
-                                            </Button>
 
                                             {/* Drag & Drop File Picker */}
                                             <div
@@ -1102,10 +1071,151 @@ const CameraPage = () => {
                                         onChange={handleNativeCameraChange}
                                     />
                                 </TabsContent>
+
+                                {/* TAB 3: BARCODE SCANNER (สแกนเลขบาร์โค้ดตัวเล่มส่งเข้าช่อง Input บนคอมทันที) */}
+                                <TabsContent value="barcode" className="space-y-4 focus-visible:outline-none">
+
+                                    <div className="relative rounded-2xl overflow-hidden aspect-[4/3] bg-zinc-950 shadow-md flex items-center justify-center border border-zinc-800">
+                                        {cameraError ? (
+                                            <div className="p-6 text-center text-white space-y-2">
+                                                <AlertCircle className="size-8 text-red-400 mx-auto" />
+                                                <p className="font-[k-medium] text-xs text-red-300">{cameraError}</p>
+                                                <p className="font-[k-light] text-[11px] text-zinc-400">
+                                                    สามารถใช้ปุ่ม &ldquo;ถ่ายภาพบาร์โค้ดชัดสูง&rdquo; ด้านล่างแทนได้
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <Webcam
+                                                    audio={false}
+                                                    ref={barcodeWebcamRef}
+                                                    mirrored={facingMode === "user"}
+                                                    videoConstraints={{
+                                                        facingMode,
+                                                        width: { ideal: 1920 },
+                                                        height: { ideal: 1080 },
+                                                    }}
+                                                    onUserMedia={(stream) => {
+                                                        setCameraError(null)
+                                                        try {
+                                                            const track = stream.getVideoTracks()[0]
+                                                            const capabilities: any = track.getCapabilities?.() || {}
+                                                            if (capabilities.focusMode?.includes("continuous")) {
+                                                                track.applyConstraints({
+                                                                    advanced: [{ focusMode: "continuous" }]
+                                                                } as any).catch(() => { })
+                                                            }
+                                                        } catch {
+                                                            // ignore
+                                                        }
+                                                    }}
+                                                    onUserMediaError={() => {
+                                                        setCameraError("ไม่สามารถเปิดกล้องสดได้ กรุณาอนุญาตการใช้กล้อง")
+                                                    }}
+                                                    className="w-full h-full object-cover"
+                                                />
+
+                                                {/* กรอบเล็งแถบบาร์โค้ด */}
+                                                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-between p-4">
+                                                    <span className="px-2.5 py-1 rounded-full bg-transparent backdrop-blur-sm text-[11px] text-white font-[k-regular] flex items-center gap-1.5 self-start">
+                                                    </span>
+
+                                                    <div className="relative w-11/12 h-28 border-2 border-blue-400/90 rounded-2xl bg-black/15 flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.32)]">
+                                                        <div className="absolute -top-1 -left-1 w-4 h-4 border-t-3 border-l-3 border-blue-400 rounded-tl" />
+                                                        <div className="absolute -top-1 -right-1 w-4 h-4 border-t-3 border-r-3 border-blue-400 rounded-tr" />
+                                                        <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-3 border-l-3 border-blue-400 rounded-bl" />
+                                                        <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-3 border-r-3 border-blue-400 rounded-br" />
+                                                        <div className="w-11/12 h-0.5 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.95)] animate-pulse" />
+                                                    </div>
+
+                                                    <p className="text-center text-[11px] text-white/90 bg-transparent backdrop-blur-xs py-1 px-3 rounded-full">
+
+                                                    </p>
+                                                </div>
+
+                                                <button
+                                                    type="button"
+                                                    onClick={toggleFacingMode}
+                                                    className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/80 active:scale-95 transition-all shadow-md"
+                                                    title="สลับกล้องหน้า/หลัง"
+                                                >
+                                                    <SwitchCamera className="size-4" />
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                </TabsContent>
                             </Tabs>
                         </CardContent>
                     </Card>
                 )}
+
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-slate-200 dark:border-zinc-800 p-4">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                            <div className="w-10 h-10 rounded-xl bg-purple-600/10 dark:bg-purple-500/20 text-purple-600 dark:text-purple-400 flex items-center justify-center">
+                                <CameraIcon className="size-5" />
+                            </div>
+                            <div>
+                                <p className="font-[k-light] text-xs text-muted-foreground">
+                                    LIS CMU Book Catalog
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Connection Status Badge */}
+                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-[k-medium] bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700">
+                            {isConnected ? (
+                                <>
+                                    <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                                    <span className="text-emerald-600 dark:text-emerald-400">เชื่อมต่อแล้ว</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span className="size-2 rounded-full bg-amber-500 animate-pulse" />
+                                    <span className="text-amber-600 dark:text-amber-400">กำลังเชื่อมต่อ</span>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Session ID display */}
+                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between text-xs text-muted-foreground font-[k-regular]">
+                        <span>รหัสเซสชัน (Session ID):</span>
+                        <span className="font-[k-medium] text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800">
+                            {sessionId || "ไม่ระบุ"}
+                        </span>
+                    </div>
+
+                    {/* AI Model Selector */}
+                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-between gap-3 text-xs font-[k-regular]">
+                        <span className="text-muted-foreground flex items-center gap-1.5 shrink-0">
+                            <span>เลือก AI Model</span>
+                        </span>
+                        <Select
+                            value={selectedModel}
+                            onValueChange={handleModelChange}
+                            disabled={isSending}
+                        >
+                            <SelectTrigger className="h-8 w-[210px] text-xs font-[k-medium] rounded-lg border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/70 cursor-pointer">
+                                <SelectValue placeholder="เลือกโมเดล AI">
+                                    {selectedModel}
+                                </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent className="font-[k-regular]">
+                                {AI_MODEL_OPTIONS.map((model) => (
+                                    <SelectItem
+                                        key={model.value}
+                                        value={model.value}
+                                        className="text-xs font-[k-regular] cursor-pointer"
+                                    >
+                                        {model.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
 
                 {/* Footer Tips */}
                 <p className="text-center text-xs text-muted-foreground font-[k-light]">

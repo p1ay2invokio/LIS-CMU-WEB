@@ -69,14 +69,16 @@ export default function Home() {
       >
 
         <h1 className="font-[k-medium] text-white text-[50px]">
-          โรงเรียนวัดห้วยแก้ว
+          โรงเรียนสันป่าตองวิทยาคม
         </h1>
         <h1 className="font-[k-regular] text-white/60 text-[20px] mt-[-10px]">
           โครงการผ้าป่าหนังสือสร้างห้องสมุด 2569
         </h1>
 
         <div className="flex  gap-5 mt-6 pointer-events-auto">
-          <Button className="font-[k-regular] bg-white text-black text-lg p-[20px] cursor-pointer">ห้องสมุดโรงเรียน</Button>
+          <Button onClick={() => {
+            navigate.push("/library")
+          }} className="font-[k-regular] bg-white text-black text-lg p-[20px] cursor-pointer">ห้องสมุดโรงเรียน</Button>
           <Button onClick={() => {
             navigate.push("/catalog")
           }} className="font-[k-regular] text-lg p-[20px] cursor-pointer">ทรัพยากรสารสนเทศ</Button>

@@ -112,6 +112,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { EditBookDialog } from "@/components/edit-book-dialog"
+import { BarcodeInput } from "@/components/barcode-input"
 
 import { PlayDisNotify } from 'playdis-notify'
 
@@ -188,6 +189,7 @@ const INITIAL_FORM_DATA = {
     customResourceType: "", // สำหรับกรอกข้อมูลเพิ่มเติมเมื่อเลือก "อื่นๆ"
     location: "" as string, // * ค่าเริ่มต้น: "ห้องเยาวชน"
     customLocation: "", // สำหรับกรอกข้อมูลเพิ่มเติมเมื่อเลือก "อื่นๆ"
+    barcode_nmbr: "", // * หมายเลขบาร์โค้ดประจำตัวเล่ม (บังคับกรอกทุกครั้ง)
     callNumber: "", // *
     showInOpac: true, // แสดงใน OPAC
     copiesCount: 1, // จำนวนฉบับ/เล่ม (Copies)
@@ -434,6 +436,7 @@ const Catalog = () => {
     const [duplicateBook, setDuplicateBook] = React.useState<any>(null)
     const [isDuplicateModalOpen, setIsDuplicateModalOpen] = React.useState<boolean>(false)
     const [isAddingCopyFromDuplicate, setIsAddingCopyFromDuplicate] = React.useState<boolean>(false)
+    const [duplicateCopyBarcode, setDuplicateCopyBarcode] = React.useState<string>("")
 
     // State สำหรับ Modal แก้ไขข้อมูลหนังสือ (Edit Book - เฉพาะ Role 1)
     const [editingBibid, setEditingBibid] = React.useState<number | null>(null)
@@ -654,6 +657,12 @@ const Catalog = () => {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
 
+        const trimmedBarcode = (formData.barcode_nmbr || "").trim()
+        if (!trimmedBarcode) {
+            toast.error("กรุณากรอกหรือสแกนหมายเลขบาร์โค้ดของตัวเล่มก่อนบันทึก")
+            return
+        }
+
         if (!formData.title || !formData.author) {
             toast.error("กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วนก่อนบันทึก (ชื่อเรื่อง, ผู้แต่ง)")
             return
@@ -663,13 +672,22 @@ const Catalog = () => {
             setIsSubmitting(true)
             let playbook = new PlayBook()
 
+            // 0. ตรวจสอบว่าหมายเลขบาร์โค้ดซ้ำกับเล่มอื่นในระบบหรือไม่
+            const barcodeCheck = await playbook.checkBarcode(trimmedBarcode).catch(() => null)
+            if (barcodeCheck && barcodeCheck.valid === false) {
+                toast.error(barcodeCheck.message || `หมายเลขบาร์โค้ด "${trimmedBarcode}" ไม่สามารถใช้งานได้`)
+                setIsSubmitting(false)
+                return
+            }
+
             // 1. ตรวจสอบว่า ISBN ที่จะเพิ่มมีอยู่ในฐานข้อมูลแล้วหรือไม่
             const cleanIsbn = (formData.isbn || "").trim()
             if (cleanIsbn) {
                 const checkRes = await playbook.checkIsbn(cleanIsbn).catch(() => null)
                 if (checkRes && checkRes.exists && checkRes.book) {
-                    // พบหนังสือที่มี ISBN นี้ในฐานข้อมูลแล้ว ให้เปิด Modal ถามผู้ใช้ว่าจะเพิ่มเป็น Copy หรือไม่
+                    // พบหนังสือที่มี ISBN นี้ในฐานข้อมูลแล้ว ให้เปิด Modal ถามผู้ใช้ว่าจะเพิ่มเป็น Copy หรือไม่ พร้อมส่งต่อบาร์โค้ดที่กรอกไว้
                     setDuplicateBook(checkRes.book)
+                    setDuplicateCopyBarcode(trimmedBarcode)
                     setIsDuplicateModalOpen(true)
                     setIsSubmitting(false)
                     return
@@ -687,6 +705,7 @@ const Catalog = () => {
             const effectiveCallNumber = rawDewey || "-"
             const submissionData = {
                 ...formData,
+                barcode_nmbr: trimmedBarcode,
                 lcCallItem: "",
                 lcCallClass: "",
                 summary: "",
@@ -751,15 +770,21 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
     // เมื่อกดยืนยันเพิ่มเป็น Copy ของหนังสือเล่มที่มีอยู่แล้วในฐานข้อมูล
     const handleConfirmAddCopy = async () => {
         if (!duplicateBook) return
+        const trimmedCopyBarcode = duplicateCopyBarcode.trim()
+        if (!trimmedCopyBarcode) {
+            toast.error("กรุณากรอกหรือสแกนหมายเลขบาร์โค้ดสำหรับตัวเล่มใหม่")
+            return
+        }
         try {
             setIsAddingCopyFromDuplicate(true)
             let playbook = new PlayBook()
             const res = await playbook.addBookCopy(duplicateBook.bibid, {
                 userid: user?.userid,
+                barcode_nmbr: trimmedCopyBarcode,
             })
 
             const nextCopyNum = res?.copy?.copyid || (duplicateBook.copyCount || 1) + 1
-            const barcodeNum = res?.copy?.barcode_nmbr || "-"
+            const barcodeNum = res?.copy?.barcode_nmbr || trimmedCopyBarcode
 
             toast.success("เพิ่ม Copy เรียบร้อยแล้ว", {
                 description: `หนังสือ: ${duplicateBook.title} (ฉบับที่ ${nextCopyNum}, Barcode: ${barcodeNum})`,
@@ -769,6 +794,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
 
             setIsDuplicateModalOpen(false)
             setDuplicateBook(null)
+            setDuplicateCopyBarcode("")
             setIsModalOpen(false)
             setFormData(getInitialFormData())
             await fetchAllData()
@@ -784,6 +810,7 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
     const handleCancelDuplicate = () => {
         setIsDuplicateModalOpen(false)
         setDuplicateBook(null)
+        setDuplicateCopyBarcode("")
     }
 
     let [collections, setCollections] = useState<any[]>([])
@@ -1964,150 +1991,150 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                 </div>
 
                                 {isGeneralInfoOpen && (
-                                <div className={cn(
-                                    "gap-y-3.5",
-                                    formLayout === "grid"
-                                        ? "grid grid-cols-1 md:grid-cols-2 gap-x-6"
-                                        : "grid grid-cols-1 gap-y-3.5"
-                                )}>
-                                    {/* 1. ประเภททรัพยากรสารสนเทศ */}
-                                    <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-                                        <Label
-                                            htmlFor="resourceType"
-                                            className={cn(
-                                                "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
-                                                formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
-                                            )}
-                                        >
-                                            <span>ประเภททรัพยากร</span>
-                                            <span className="text-destructive font-bold">*</span>
-                                        </Label>
-                                        <div className="flex-1 min-w-0">
-                                            <Select
-                                                value={formData.resourceType || null}
-                                                onValueChange={(val) => handleInputChange("resourceType", val ?? "")}
-                                            >
-                                                <SelectTrigger
-                                                    id="resourceType"
-                                                    className={cn(
-                                                        "w-full text-sm h-9 cursor-pointer bg-background/50 focus:bg-background transition-colors focus-visible:border-blue-500 focus-visible:ring-blue-500/20",
-                                                        formData.resourceType
-                                                            ? "text-blue-600 dark:text-blue-400 font-[k-medium]"
-                                                            : "text-muted-foreground/60 font-[k-light]"
-                                                    )}
-                                                >
-                                                    <SelectValue placeholder="เลือกประเภททรัพยากร">
-                                                        {
-                                                            (materials.length > 0 ? materials : DEFAULT_MATERIALS).find(
-                                                                (type) => String(type.code) === String(formData.resourceType)
-                                                            )?.description
-                                                        }
-                                                    </SelectValue>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {(materials.length > 0 ? materials : DEFAULT_MATERIALS).map((type) => (
-                                                        <SelectItem
-                                                            key={type.code}
-                                                            value={String(type.code)}
-                                                            className="font-[k-regular] text-sm cursor-pointer"
-                                                        >
-                                                            {type.description}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                    </div>
-
-                                    {/* 2. สถานที่จัดเก็บ */}
-                                    <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-                                        <Label
-                                            htmlFor="location"
-                                            className={cn(
-                                                "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
-                                                formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
-                                            )}
-                                        >
-                                            <span>สถานที่จัดเก็บ</span>
-                                            <span className="text-destructive font-bold">*</span>
-                                        </Label>
-                                        <div className="flex-1 min-w-0 space-y-2">
-                                            <Select
-                                                value={formData.location || null}
-                                                onValueChange={(val) => handleInputChange("location", val ?? "")}
-                                            >
-                                                <SelectTrigger
-                                                    id="location"
-                                                    className={cn(
-                                                        "w-full text-sm h-9 cursor-pointer bg-background/50 focus:bg-background transition-colors focus-visible:border-blue-500 focus-visible:ring-blue-500/20",
-                                                        formData.location
-                                                            ? "text-blue-600 dark:text-blue-400 font-[k-medium]"
-                                                            : "text-muted-foreground/60 font-[k-light]"
-                                                    )}
-                                                >
-                                                    <SelectValue placeholder="เลือกสถานที่จัดเก็บ">
-                                                        {
-                                                            (collections.length > 0 ? collections : DEFAULT_COLLECTIONS).find(
-                                                                (type) => String(type.code) === String(formData.location)
-                                                            )?.description
-                                                        }
-                                                    </SelectValue>
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {(collections.length > 0 ? collections : DEFAULT_COLLECTIONS).map((loc) => (
-                                                        <SelectItem
-                                                            key={loc.code}
-                                                            value={String(loc.code)}
-                                                            className="font-[k-regular] text-sm cursor-pointer"
-                                                        >
-                                                            {loc.description}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                            {formData.location === "อื่นๆ" && (
-                                                <Input
-                                                    value={formData.customLocation}
-                                                    onChange={(e) => handleInputChange("customLocation", e.target.value)}
-                                                    className="font-[k-medium] text-sm w-full h-9 bg-background/50 focus:bg-background text-blue-600 dark:text-blue-400 placeholder:text-muted-foreground/60 placeholder:font-[k-light] focus-visible:border-blue-500 focus-visible:ring-blue-500/20 transition-colors"
-                                                    placeholder="ระบุสถานที่จัดเก็บเพิ่มเติม..."
-                                                    autoFocus
-                                                />
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    {/* 3. แสดงใน OPAC */}
                                     <div className={cn(
-                                        "flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3",
-                                        formLayout === "grid" ? "md:col-span-2" : ""
+                                        "gap-y-3.5",
+                                        formLayout === "grid"
+                                            ? "grid grid-cols-1 md:grid-cols-2 gap-x-6"
+                                            : "grid grid-cols-1 gap-y-3.5"
                                     )}>
-                                        <Label
-                                            htmlFor="showInOpac"
-                                            className={cn(
-                                                "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
-                                                formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
-                                            )}
-                                        >
-                                            <span>แสดงใน OPAC</span>
-                                        </Label>
-                                        <div className="flex-1 min-w-0 flex items-center gap-3 h-9">
-                                            <Switch
-                                                id="showInOpac"
-                                                checked={formData.showInOpac}
-                                                onCheckedChange={(checked) => handleInputChange("showInOpac", checked)}
-                                            />
-                                            <span className={cn(
-                                                "text-xs font-[k-medium] px-2.5 py-0.5 rounded-full transition-colors",
-                                                formData.showInOpac
-                                                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                                                    : "bg-muted text-muted-foreground border"
-                                            )}>
-                                                {formData.showInOpac ? "แสดงในระบบสืบค้น" : "ซ่อนจากระบบสืบค้น"}
-                                            </span>
+                                        {/* 1. ประเภททรัพยากรสารสนเทศ */}
+                                        <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                                            <Label
+                                                htmlFor="resourceType"
+                                                className={cn(
+                                                    "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
+                                                    formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
+                                                )}
+                                            >
+                                                <span>ประเภททรัพยากร</span>
+                                                <span className="text-destructive font-bold">*</span>
+                                            </Label>
+                                            <div className="flex-1 min-w-0">
+                                                <Select
+                                                    value={formData.resourceType || null}
+                                                    onValueChange={(val) => handleInputChange("resourceType", val ?? "")}
+                                                >
+                                                    <SelectTrigger
+                                                        id="resourceType"
+                                                        className={cn(
+                                                            "w-full text-sm h-9 cursor-pointer bg-background/50 focus:bg-background transition-colors focus-visible:border-blue-500 focus-visible:ring-blue-500/20",
+                                                            formData.resourceType
+                                                                ? "text-blue-600 dark:text-blue-400 font-[k-medium]"
+                                                                : "text-muted-foreground/60 font-[k-light]"
+                                                        )}
+                                                    >
+                                                        <SelectValue placeholder="เลือกประเภททรัพยากร">
+                                                            {
+                                                                (materials.length > 0 ? materials : DEFAULT_MATERIALS).find(
+                                                                    (type) => String(type.code) === String(formData.resourceType)
+                                                                )?.description
+                                                            }
+                                                        </SelectValue>
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {(materials.length > 0 ? materials : DEFAULT_MATERIALS).map((type) => (
+                                                            <SelectItem
+                                                                key={type.code}
+                                                                value={String(type.code)}
+                                                                className="font-[k-regular] text-sm cursor-pointer"
+                                                            >
+                                                                {type.description}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        {/* 2. สถานที่จัดเก็บ */}
+                                        <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+                                            <Label
+                                                htmlFor="location"
+                                                className={cn(
+                                                    "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
+                                                    formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
+                                                )}
+                                            >
+                                                <span>สถานที่จัดเก็บ</span>
+                                                <span className="text-destructive font-bold">*</span>
+                                            </Label>
+                                            <div className="flex-1 min-w-0 space-y-2">
+                                                <Select
+                                                    value={formData.location || null}
+                                                    onValueChange={(val) => handleInputChange("location", val ?? "")}
+                                                >
+                                                    <SelectTrigger
+                                                        id="location"
+                                                        className={cn(
+                                                            "w-full text-sm h-9 cursor-pointer bg-background/50 focus:bg-background transition-colors focus-visible:border-blue-500 focus-visible:ring-blue-500/20",
+                                                            formData.location
+                                                                ? "text-blue-600 dark:text-blue-400 font-[k-medium]"
+                                                                : "text-muted-foreground/60 font-[k-light]"
+                                                        )}
+                                                    >
+                                                        <SelectValue placeholder="เลือกสถานที่จัดเก็บ">
+                                                            {
+                                                                (collections.length > 0 ? collections : DEFAULT_COLLECTIONS).find(
+                                                                    (type) => String(type.code) === String(formData.location)
+                                                                )?.description
+                                                            }
+                                                        </SelectValue>
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {(collections.length > 0 ? collections : DEFAULT_COLLECTIONS).map((loc) => (
+                                                            <SelectItem
+                                                                key={loc.code}
+                                                                value={String(loc.code)}
+                                                                className="font-[k-regular] text-sm cursor-pointer"
+                                                            >
+                                                                {loc.description}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                {formData.location === "อื่นๆ" && (
+                                                    <Input
+                                                        value={formData.customLocation}
+                                                        onChange={(e) => handleInputChange("customLocation", e.target.value)}
+                                                        className="font-[k-medium] text-sm w-full h-9 bg-background/50 focus:bg-background text-blue-600 dark:text-blue-400 placeholder:text-muted-foreground/60 placeholder:font-[k-light] focus-visible:border-blue-500 focus-visible:ring-blue-500/20 transition-colors"
+                                                        placeholder="ระบุสถานที่จัดเก็บเพิ่มเติม..."
+                                                        autoFocus
+                                                    />
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* 3. แสดงใน OPAC */}
+                                        <div className={cn(
+                                            "flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3",
+                                            formLayout === "grid" ? "md:col-span-2" : ""
+                                        )}>
+                                            <Label
+                                                htmlFor="showInOpac"
+                                                className={cn(
+                                                    "shrink-0 font-[k-medium] text-sm text-foreground/80 flex items-center gap-1 cursor-pointer select-none",
+                                                    formLayout === "grid" ? "sm:w-36 md:w-38" : "sm:w-48"
+                                                )}
+                                            >
+                                                <span>แสดงใน OPAC</span>
+                                            </Label>
+                                            <div className="flex-1 min-w-0 flex items-center gap-3 h-9">
+                                                <Switch
+                                                    id="showInOpac"
+                                                    checked={formData.showInOpac}
+                                                    onCheckedChange={(checked) => handleInputChange("showInOpac", checked)}
+                                                />
+                                                <span className={cn(
+                                                    "text-xs font-[k-medium] px-2.5 py-0.5 rounded-full transition-colors",
+                                                    formData.showInOpac
+                                                        ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                                                        : "bg-muted text-muted-foreground border"
+                                                )}>
+                                                    {formData.showInOpac ? "แสดงในระบบสืบค้น" : "ซ่อนจากระบบสืบค้น"}
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 )}
                             </div>
 
@@ -2548,6 +2575,38 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                                     </Button>
                                 </div>
                             </div>
+
+                            {/* ส่วนระบุหมายเลขบาร์โค้ดประจำตัวเล่ม (แสดงตลอดเวลาและบังคับกรอกทุกครั้ง) */}
+                            <div className="rounded-xl border border-primary/25 bg-primary/[0.03] p-4 sm:px-5 sm:py-3.5 shadow-2xs">
+                                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                                    <Label
+                                        htmlFor="barcode_nmbr"
+                                        className={cn(
+                                            "shrink-0 font-[k-medium] text-sm text-foreground flex items-center gap-1.5 cursor-pointer select-none",
+                                            formLayout === "grid" ? "sm:w-44" : "sm:w-48"
+                                        )}
+                                    >
+                                        <div className="p-1 rounded-md bg-primary/10 text-primary">
+                                            <Barcode className="size-4" />
+                                        </div>
+                                        <span>บาร์โค้ดตัวเล่ม</span>
+                                        <span className="text-destructive font-bold">*</span>
+                                    </Label>
+                                    <div className="flex-1 min-w-0">
+                                        <BarcodeInput
+                                            id="barcode_nmbr"
+                                            value={formData.barcode_nmbr}
+                                            onChange={(val) => handleInputChange("barcode_nmbr", val)}
+                                            placeholder="กรอกเลขบาร์โค้ด หรือกดปุ่มสแกนด้านขวา..."
+                                            username={user?.username || ""}
+                                            targetKey="add-book"
+                                            label="บาร์โค้ดหนังสือใหม่"
+                                            listenWhenMounted={isModalOpen && !isDuplicateModalOpen}
+                                            required
+                                        />
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         {/* Modal Footer */}
@@ -2600,6 +2659,8 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                     </form>
                 </DialogContent>
             </Dialog>
+
+
 
             {/* Modal ย่อยสำหรับถามผู้ใช้ว่าต้องการเพิ่ม Tag อะไร */}
             <Dialog open={isAddTagDialogOpen} onOpenChange={setIsAddTagDialogOpen}>
@@ -2712,10 +2773,28 @@ Preview: https://liscmubooks.ac.th/book/${response?.bibid || ""}
                         </div>
                     )}
 
-                    <div className="text-center py-1">
-                        <p className="font-[k-medium] text-sm text-foreground">
+                    <div className="space-y-2 py-1">
+                        <p className="font-[k-medium] text-sm text-foreground text-center">
                             คุณต้องการเพิ่มเป็นฉบับใหม่ (Copy) ของหนังสือเล่มนี้หรือไม่?
                         </p>
+                        <div className="space-y-1.5 pt-1">
+                            <Label htmlFor="duplicate-copy-barcode" className="font-[k-medium] text-xs text-foreground flex items-center gap-1">
+                                <Barcode className="size-3.5 text-primary" />
+                                <span>หมายเลขบาร์โค้ดสำหรับฉบับใหม่</span>
+                                <span className="text-destructive font-bold">*</span>
+                            </Label>
+                            <BarcodeInput
+                                id="duplicate-copy-barcode"
+                                value={duplicateCopyBarcode}
+                                onChange={setDuplicateCopyBarcode}
+                                placeholder="กรอกหรือสแกนเลขบาร์โค้ด..."
+                                username={user?.username || ""}
+                                targetKey="duplicate-copy"
+                                label={`เพิ่มฉบับใหม่: ${duplicateBook?.title || ""}`}
+                                listenWhenMounted={isDuplicateModalOpen}
+                                required
+                            />
+                        </div>
                     </div>
 
                     <div className="flex items-center gap-3 pt-2">

@@ -24,6 +24,7 @@ export class PlayBook {
         page?: number
         limit?: number
         status?: string
+        opac?: string
         search?: string
         searchField?: string
     }) => {
@@ -86,7 +87,57 @@ export class PlayBook {
     }
 
     public addBookCopy = async (bibid: number | string, copyData?: any) => {
-        let data = await axios.post(`${endpoint}/book/${bibid}/copy`, copyData || {})
+        let token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+        let headers: any = {}
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`
+        }
+        let data = await axios.post(`${endpoint}/book/${bibid}/copy`, copyData || {}, { headers })
+
+        return data.data
+    }
+
+    public updateBookCopy = async (
+        bibid: number | string,
+        copyid: number | string,
+        copyData: { barcode_nmbr: string; copy_desc?: string }
+    ) => {
+        let token = typeof window !== "undefined" ? localStorage.getItem("token") : null
+        let headers: any = {}
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`
+        }
+        let data = await axios.patch(`${endpoint}/book/${bibid}/copy/${copyid}`, copyData, { headers })
+
+        return data.data
+    }
+
+    public checkBarcode = async (
+        barcode: string,
+        excludeBibid?: number | string,
+        excludeCopyid?: number | string
+    ) => {
+        let data = await axios.get(`${endpoint}/book/check-barcode`, {
+            params: {
+                barcode,
+                ...(excludeBibid !== undefined ? { excludeBibid } : {}),
+                ...(excludeCopyid !== undefined ? { excludeCopyid } : {}),
+            }
+        })
+
+        return data.data
+    }
+
+    public scanBarcodeImage = async (file: File, sessionId?: string, target?: string) => {
+        let formData = new FormData()
+        formData.append("image", file)
+        if (sessionId) {
+            formData.append("sessionId", sessionId)
+        }
+        if (target) {
+            formData.append("target", target)
+        }
+        let data = await axios.post(`${endpoint}/scan-barcode`, formData)
 
         return data.data
     }

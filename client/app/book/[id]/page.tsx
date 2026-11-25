@@ -85,6 +85,7 @@ import {
 import { cn } from "@/lib/utils"
 import QRCode from "react-qr-code"
 import { EditBookDialog } from "@/components/edit-book-dialog"
+import { BarcodeInput } from "@/components/barcode-input"
 
 interface BookDetailData {
     bibid: number
@@ -173,8 +174,15 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
 
     // Modal state for adding a new copy
     const [isAddCopyOpen, setIsAddCopyOpen] = useState<boolean>(false)
+    const [newCopyBarcode, setNewCopyBarcode] = useState<string>("")
     const [newCopyDesc, setNewCopyDesc] = useState<string>("")
     const [isAddingCopy, setIsAddingCopy] = useState<boolean>(false)
+
+    // Modal state for editing an existing copy's barcode (เฉพาะ Role 1)
+    const [copyToEdit, setCopyToEdit] = useState<BookDetailData["copies"][number] | null>(null)
+    const [editCopyBarcode, setEditCopyBarcode] = useState<string>("")
+    const [isEditCopyOpen, setIsEditCopyOpen] = useState<boolean>(false)
+    const [isUpdatingCopy, setIsUpdatingCopy] = useState<boolean>(false)
 
     // QR Code modal
     const [selectedBarcode, setSelectedBarcode] = useState<string | null>(null)
@@ -245,22 +253,64 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
     const handleAddCopy = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!book) return
+        const trimmedBarcode = newCopyBarcode.trim()
+        if (!trimmedBarcode) {
+            toast.error("กรุณากรอกหรือสแกนหมายเลขบาร์โค้ดของตัวเล่ม")
+            return
+        }
         try {
             setIsAddingCopy(true)
             const playbook = new PlayBook()
             const res = await playbook.addBookCopy(book.bibid, {
+                barcode_nmbr: trimmedBarcode,
                 copy_desc: newCopyDesc.trim() || undefined,
+                userid: user?.userid,
             })
             toast.success(res?.message || "เพิ่มตัวเล่มเรียบร้อยแล้ว", {
                 icon: <CircleCheck className="size-4 text-emerald-500" />,
             })
             setIsAddCopyOpen(false)
+            setNewCopyBarcode("")
             setNewCopyDesc("")
             await fetchBook()
         } catch (err: any) {
             toast.error(err?.response?.data?.message || "เกิดข้อผิดพลาดในการเพิ่มตัวเล่ม")
         } finally {
             setIsAddingCopy(false)
+        }
+    }
+
+    // Edit copy barcode (เฉพาะ Role 1)
+    const handleUpdateCopyBarcode = async (e: React.FormEvent) => {
+        e.preventDefault()
+        if (!book?.bibid || !copyToEdit) return
+        if (!isRole1) {
+            toast.error("เฉพาะผู้ใช้งาน Role 1 เท่านั้นที่สามารถแก้ไขหมายเลขบาร์โค้ดได้")
+            setIsEditCopyOpen(false)
+            return
+        }
+        const trimmedBarcode = editCopyBarcode.trim()
+        if (!trimmedBarcode) {
+            toast.error("กรุณากรอกหรือสแกนหมายเลขบาร์โค้ด")
+            return
+        }
+        try {
+            setIsUpdatingCopy(true)
+            const playbook = new PlayBook()
+            const res = await playbook.updateBookCopy(book.bibid, copyToEdit.copyid, {
+                barcode_nmbr: trimmedBarcode,
+            })
+            toast.success(res?.message || "แก้ไขหมายเลขบาร์โค้ดเรียบร้อยแล้ว", {
+                icon: <CircleCheck className="size-4 text-emerald-500" />,
+            })
+            setIsEditCopyOpen(false)
+            setCopyToEdit(null)
+            setEditCopyBarcode("")
+            await fetchBook()
+        } catch (err: any) {
+            toast.error(err?.response?.data?.message || "เกิดข้อผิดพลาดในการแก้ไขหมายเลขบาร์โค้ด")
+        } finally {
+            setIsUpdatingCopy(false)
         }
     }
 
@@ -1009,7 +1059,11 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
 
                                                 <Button
                                                     size="sm"
-                                                    onClick={() => setIsAddCopyOpen(true)}
+                                                    onClick={() => {
+                                                        setNewCopyBarcode("")
+                                                        setNewCopyDesc("")
+                                                        setIsAddCopyOpen(true)
+                                                    }}
                                                     className="font-[k-medium] text-xs cursor-pointer shrink-0 bg-blue-600 hover:bg-blue-700 text-white"
                                                 >
                                                     <PlusCircle className="size-4 mr-1.5" />
@@ -1084,18 +1138,33 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
                                                                     </td>
                                                                     {isRole1 && (
                                                                         <td className="px-4 py-3 text-center">
-                                                                            <Button
-                                                                                size="sm"
-                                                                                variant="ghost"
-                                                                                onClick={() => {
-                                                                                    setCopyToDelete(c)
-                                                                                    setIsDeleteCopyOpen(true)
-                                                                                }}
-                                                                                className="size-8 p-0 cursor-pointer text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                                                                title={`ลบตัวเล่มฉบับที่ ${c.copyid} (Barcode: ${c.barcode_nmbr})`}
-                                                                            >
-                                                                                <Trash2 className="size-4 text-red-500" />
-                                                                            </Button>
+                                                                            <div className="inline-flex items-center justify-center gap-1">
+                                                                                <Button
+                                                                                    size="sm"
+                                                                                    variant="ghost"
+                                                                                    onClick={() => {
+                                                                                        setCopyToEdit(c)
+                                                                                        setEditCopyBarcode(c.barcode_nmbr || "")
+                                                                                        setIsEditCopyOpen(true)
+                                                                                    }}
+                                                                                    className="size-8 p-0 cursor-pointer text-muted-foreground hover:text-blue-600 hover:bg-blue-500/10"
+                                                                                    title={`แก้ไขหมายเลขบาร์โค้ดฉบับที่ ${c.copyid} (Barcode: ${c.barcode_nmbr})`}
+                                                                                >
+                                                                                    <Pencil className="size-3.5 text-blue-600 dark:text-blue-400" />
+                                                                                </Button>
+                                                                                <Button
+                                                                                    size="sm"
+                                                                                    variant="ghost"
+                                                                                    onClick={() => {
+                                                                                        setCopyToDelete(c)
+                                                                                        setIsDeleteCopyOpen(true)
+                                                                                    }}
+                                                                                    className="size-8 p-0 cursor-pointer text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                                                                    title={`ลบตัวเล่มฉบับที่ ${c.copyid} (Barcode: ${c.barcode_nmbr})`}
+                                                                                >
+                                                                                    <Trash2 className="size-4 text-red-500" />
+                                                                                </Button>
+                                                                            </div>
                                                                         </td>
                                                                     )}
                                                                 </tr>
@@ -1281,11 +1350,31 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
                             <span>เพิ่มตัวเล่มใหม่</span>
                         </DialogTitle>
                         <DialogDescription className="font-[k-light] text-xs text-muted-foreground">
-                            ระบบจะรันหมายเลขบาร์โค้ดลำดับถัดไปให้อัตโนมัติสำหรับหนังสือ &ldquo;{book?.title}&rdquo;
+                            กรอกหรือสแกนหมายเลขบาร์โค้ดประจำตัวเล่มสำหรับหนังสือ &ldquo;{book?.title}&rdquo;
                         </DialogDescription>
                     </DialogHeader>
 
                     <form onSubmit={handleAddCopy} className="space-y-4 pt-2">
+                        <div className="space-y-2">
+                            <Label htmlFor="newCopyBarcode" className="font-[k-medium] text-sm flex items-center gap-1">
+                                <Barcode className="size-4 text-primary" />
+                                <span>หมายเลขบาร์โค้ดตัวเล่ม</span>
+                                <span className="text-destructive font-bold">*</span>
+                            </Label>
+                            <BarcodeInput
+                                id="newCopyBarcode"
+                                value={newCopyBarcode}
+                                onChange={setNewCopyBarcode}
+                                placeholder="กรอกเลขบาร์โค้ด หรือกดปุ่มสแกนด้านขวา..."
+                                username={user?.username || ""}
+                                targetKey="book-add-copy"
+                                label={`เพิ่มตัวเล่ม: ${book?.title || ""}`}
+                                listenWhenMounted={isAddCopyOpen}
+                                required
+                                autoFocus
+                            />
+                        </div>
+
                         <div className="space-y-2">
                             <Label htmlFor="copyDesc" className="font-[k-medium] text-sm">
                                 รายละเอียดตัวเล่ม (ไม่บังคับ)
@@ -1322,6 +1411,77 @@ export default function BookDetailPage({ params }: { params: Promise<{ id: strin
                                     <PlusCircle className="size-4 mr-1.5" />
                                 )}
                                 <span>ยืนยันการเพิ่มตัวเล่ม</span>
+                            </Button>
+                        </div>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Modal: Edit Copy Barcode (เฉพาะ Role 1) */}
+            <Dialog open={isEditCopyOpen} onOpenChange={(open) => {
+                if (!isUpdatingCopy) {
+                    setIsEditCopyOpen(open)
+                    if (!open) {
+                        setCopyToEdit(null)
+                    }
+                }
+            }}>
+                <DialogContent className="sm:max-w-md rounded-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="font-[k-medium] text-lg flex items-center gap-2">
+                            <Pencil className="size-4 text-blue-600" />
+                            <span>แก้ไขหมายเลขบาร์โค้ด (ฉบับที่ {copyToEdit?.copyid})</span>
+                        </DialogTitle>
+                        <DialogDescription className="font-[k-light] text-xs text-muted-foreground">
+                            แก้ไขหมายเลขบาร์โค้ดของหนังสือ &ldquo;{book?.title}&rdquo; (เฉพาะผู้ดูแลระบบ Role 1)
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <form onSubmit={handleUpdateCopyBarcode} className="space-y-4 pt-2">
+                        <div className="space-y-2">
+                            <Label htmlFor="editCopyBarcode" className="font-[k-medium] text-sm flex items-center gap-1">
+                                <Barcode className="size-4 text-primary" />
+                                <span>หมายเลขบาร์โค้ดใหม่</span>
+                                <span className="text-destructive font-bold">*</span>
+                            </Label>
+                            <BarcodeInput
+                                id="editCopyBarcode"
+                                value={editCopyBarcode}
+                                onChange={setEditCopyBarcode}
+                                placeholder="กรอกเลขบาร์โค้ด หรือกดปุ่มสแกนด้านขวา..."
+                                username={user?.username || ""}
+                                targetKey="book-edit-copy"
+                                label={`แก้บาร์โค้ดฉบับที่ ${copyToEdit?.copyid || ""}: ${book?.title || ""}`}
+                                listenWhenMounted={isEditCopyOpen}
+                                required
+                                autoFocus
+                            />
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                    setIsEditCopyOpen(false)
+                                    setCopyToEdit(null)
+                                }}
+                                disabled={isUpdatingCopy}
+                                className="font-[k-regular] cursor-pointer"
+                            >
+                                ยกเลิก
+                            </Button>
+                            <Button
+                                type="submit"
+                                disabled={isUpdatingCopy}
+                                className="font-[k-medium] cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
+                            >
+                                {isUpdatingCopy ? (
+                                    <Loader2 className="size-4 animate-spin mr-1.5" />
+                                ) : (
+                                    <CheckCircle2 className="size-4 mr-1.5" />
+                                )}
+                                <span>บันทึกบาร์โค้ด</span>
                             </Button>
                         </div>
                     </form>
